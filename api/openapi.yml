@@ -1957,7 +1957,7 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Api_SystemStatus'
-            security: {  }
+
     /time:
         get:
             tags:
@@ -1971,7 +1971,7 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Api_Time'
-            security: {  }
+
     /internal/relays:
         get:
             tags:
@@ -2002,7 +2002,7 @@ paths:
                                 type: array
                                 items:
                                     $ref: '#/components/schemas/Api_NowPlaying'
-            security: {  }
+
     '/nowplaying/{station_id}':
         get:
             tags:
@@ -2021,7 +2021,7 @@ paths:
                                 $ref: '#/components/schemas/Api_NowPlaying'
                 404:
                     $ref: '#/components/responses/RecordNotFound'
-            security: {  }
+
     '/nowplaying/{station_id}/art':
         get:
             tags:
@@ -2041,7 +2041,7 @@ paths:
                                 type: string
                 404:
                     $ref: '#/components/responses/RecordNotFound'
-            security: {  }
+
     /openapi.yml:
         get:
             tags:
@@ -2057,7 +2057,7 @@ paths:
                                 description: 'The OpenAPI specification document for this installation.'
                                 type: string
                                 format: binary
-            security: {  }
+
     /prometheus:
         get:
             tags:
@@ -2099,7 +2099,7 @@ paths:
                             description: 'The current URL of the resource.'
                             schema:
                                 type: string
-            security: {  }
+
         post:
             tags:
                 - 'Stations: Media'
@@ -2509,7 +2509,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-    '/station/{station_id}/file/{id}/play':
+    '/station/{station_id}/file/{media_id}/play':
         get:
             tags:
                 - 'Stations: Media'
@@ -2625,7 +2625,7 @@ paths:
                     $ref: '#/components/responses/AccessDenied'
                 500:
                     $ref: '#/components/responses/GenericError'
-    '/station/{station_id}/file/{id}':
+    '/station/{station_id}/file/{media_id}':
         get:
             tags:
                 - 'Stations: Media'
@@ -2941,7 +2941,7 @@ paths:
                                 type: array
                                 items:
                                     $ref: '#/components/schemas/Api_NowPlaying_Station'
-            security: {  }
+
     '/station/{station_id}':
         get:
             tags:
@@ -2960,7 +2960,7 @@ paths:
                                 $ref: '#/components/schemas/Api_NowPlaying_Station'
                 404:
                     $ref: '#/components/responses/RecordNotFound'
-            security: {  }
+
     '/station/{station_id}/liquidsoap-config/export':
         get:
             tags:
@@ -3339,7 +3339,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/ondemand':
         get:
             tags:
@@ -3362,7 +3362,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/playlist/{id}/clone':
         post:
             tags:
@@ -4036,7 +4036,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
         post:
             tags:
                 - 'Stations: Podcasts'
@@ -4175,7 +4175,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
         post:
             tags:
                 - 'Stations: Podcasts'
@@ -4278,7 +4278,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/public/podcast/{podcast_id}/episodes':
         get:
             tags:
@@ -4308,7 +4308,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/podcast/{podcast_id}/episode/{episode_id}/media':
         get:
             tags:
@@ -4341,7 +4341,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
         post:
             tags:
                 - 'Stations: Podcasts'
@@ -4433,7 +4433,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/public/podcasts':
         get:
             tags:
@@ -4463,7 +4463,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/podcasts/playlists':
         get:
             tags:
@@ -4694,9 +4694,7 @@ paths:
                                 type: array
                                 items:
                                     allOf:
-                                        -
-                                            $ref: App\Entity\StationQueue
-                                        -
+                                        - 
                                             $ref: '#/components/schemas/Api_StationQueueDetailed'
                 403:
                     $ref: '#/components/responses/AccessDenied'
@@ -4728,8 +4726,6 @@ paths:
                         application/json:
                             schema:
                                 allOf:
-                                    -
-                                        $ref: App\Entity\StationQueue
                                     -
                                         $ref: '#/components/schemas/Api_StationQueueDetailed'
                 403:
@@ -5161,7 +5157,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/request/{request_id}':
         post:
             tags:
@@ -5187,7 +5183,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/schedule':
         get:
             tags:
@@ -5224,7 +5220,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
     '/station/{station_id}/status':
         get:
             tags:
@@ -5555,7 +5551,7 @@ paths:
                     $ref: '#/components/responses/RecordNotFound'
                 500:
                     $ref: '#/components/responses/GenericError'
-            security: {  }
+
         post:
             tags:
                 - 'Stations: Streamers/DJs'
@@ -6383,13 +6379,13 @@ components:
                 context:
                     type: array
                     items:
-                        type: '{}'
+                        type: object
                 extra:
                     type: array
                     items:
-                        type: '{}'
+                        type: object
                 formatted:
-                    type: '{}'
+                    type: object
                     nullable: true
             type: object
         Api_Admin_Debug_LogResult:
@@ -7130,7 +7126,7 @@ components:
         Api_GenericForm:
             type: object
             additionalProperties:
-                type: '{}'
+                type: 'object'
         Api_Form_NestedOptions:
             type: array
             items:
@@ -8472,7 +8468,7 @@ components:
                 componentProps:
                     type: array
                     items:
-                        type: '{}'
+                        type: 'object'
                     nullable: true
             type: object
         Vue_DashboardGlobals:
@@ -10353,9 +10349,7 @@ components:
             type: apiKey
             name: X-API-Key
             in: header
-security:
-    -
-        ApiKey: {  }
+
 tags:
     -
         name: 'Public: Now Playing'
