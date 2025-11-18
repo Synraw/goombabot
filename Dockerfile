@@ -5,7 +5,7 @@ ARG METRICS_PORT="8080"
 WORKDIR /app/server
 COPY . .
 RUN go mod download
-RUN go build  -o ./bot
+RUN go build -o ./bot ./cmd/bot/main.go
 
 FROM public.ecr.aws/amazonlinux/amazonlinux:latest as server
 WORKDIR /app/server
