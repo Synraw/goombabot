@@ -1,0 +1,9 @@
+services:
+  goombabot:
+    build: .
+    container_name: goombabot
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - METRICS_PORT=${METRICS_PORT}
+    ports:
+      - "${METRICS_PORT}:${METRICS_PORT}"

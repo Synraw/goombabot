@@ -7,7 +7,11 @@ features for whitelisted "moderator" users. This includes stuff like the ability
 Rough plan of what needs to be required initially:
 
 - Fetch station and endpoints from azurecast server
-- Allow user to use a use a discord "application command" to choose a station to begin playing in their current voice channel
+- Allow user to use a discord "application command" to choose a station to begin playing in their current voice channel
 - Can play the station audio in the discord voice channel. For starters we will try limit this to OPUS azurecast endpoints only to simplify things
 
+List of possible commands:
+
+- radio: play the radio (arguments tbd)
+- 
 

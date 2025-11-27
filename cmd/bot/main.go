@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/synraw/goombabot/internal/config"
+	"github.com/synraw/goombabot/internal/discord"
 )
 
 func main() {
@@ -23,6 +25,23 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	if cfg.DiscordToken == "" {
+		log.Fatal("DISCORD_TOKEN is required")
+	}
+
+	// Initialize Discord bot
+	bot, err := discord.New(cfg.DiscordToken, logger)
+	if err != nil {
+		log.Fatalf("Failed to create Discord bot: %v", err)
+	}
+
+	// Start the bot in a separate goroutine
+	go func() {
+		if err := bot.Start(context.Background()); err != nil {
+			log.Fatalf("Discord bot error: %v", err)
+		}
+	}()
 
 	// Expose prometheus metrics
 	http.Handle("/metrics", promhttp.Handler())
