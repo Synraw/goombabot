@@ -13,7 +13,7 @@ import (
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
 // and sends individual Opus packets to Discord (vc.OpusSend expects []byte).
 func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-chan struct{}) error {
-	cmd := exec.Command("B:\\Users\\timbo\\Documents\\Programming\\Go\\goombabot\\ffmpeg.exe",
+	cmd := exec.Command(".\\ffmpeg.exe",
 		"-re",
 		"-i", url,
 		"-vn",
@@ -129,7 +129,7 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 	for {
 		select {
 		case <-done:
-			return nil // Stop streaming if cancelled
+			return nil
 		case pkt, ok := <-packets:
 			if !ok {
 				return nil

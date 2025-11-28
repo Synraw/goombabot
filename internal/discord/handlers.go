@@ -123,20 +123,19 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 
 	done := make(chan struct{})
 
-	// Save 'done' in your bot struct if you want to cancel later
 	bot.mutex.Lock()
 	bot.radioCancel[guild.ID] = done
 	bot.mutex.Unlock()
 
 	go func() {
 		defer func() {
-			//close(done)
 			_ = vc.Disconnect()
 			bot.mutex.Lock()
 			delete(bot.radioCancel, guild.ID)
 			bot.mutex.Unlock()
 		}()
-		_ = streamRadioWithFFmpeg(vc, station.ListenUrl, done)
+		bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name)
+		_ = streamRadioWithFFmpeg(vc, station.StreamURL, done)
 	}()
 
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

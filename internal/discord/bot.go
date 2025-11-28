@@ -22,7 +22,7 @@ type CommandDef struct {
 type RadioStation struct {
 	ID        int
 	Name      string
-	ListenUrl string
+	StreamURL string
 }
 type Bot struct {
 	Token           string
@@ -64,11 +64,17 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	radioStations, _ := bot.azurecastClient.GetStations(context.Background())
 
 	for _, station := range radioStations {
+		opusMountUrl := station.ListenURL
+		for _, mount := range station.Mounts {
+			if mount.Format == "opus" {
+				opusMountUrl = mount.URL
+			}
+		}
 		bot.Logger.Info("Found station playing", "name", station.Name, "id", station.ID)
 		bot.radioStations[station.ID] = RadioStation{
 			ID:        station.ID,
 			Name:      station.Name,
-			ListenUrl: station.Mounts[1].URL,
+			StreamURL: opusMountUrl,
 		}
 	}
 
@@ -157,7 +163,7 @@ func (b *Bot) RegisterCommands() {
 	}
 }
 
-//event handlers
+// event handlers
 
 func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
