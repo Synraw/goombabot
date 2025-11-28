@@ -148,7 +148,6 @@ func (c *Client) do(req *http.Request, v any) error {
 
 // GetStations retrieves the list of stations from AzuraCast.
 func (c *Client) GetStations(ctx context.Context) ([]Stations, error) {
-
 	req, err := c.newRequest(ctx, http.MethodGet, "/api/stations", nil)
 	if err != nil {
 		return nil, err
@@ -162,7 +161,6 @@ func (c *Client) GetStations(ctx context.Context) ([]Stations, error) {
 
 // GetNowPlaying retrieves the "now playing" details for all stations.
 func (c *Client) GetNowPlaying(ctx context.Context) ([]NowPlaying, error) {
-
 	req, err := c.newRequest(ctx, http.MethodGet, "/api/nowplaying", nil)
 	if err != nil {
 		return nil, err

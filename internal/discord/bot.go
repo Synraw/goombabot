@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
@@ -31,6 +32,8 @@ type Bot struct {
 	config          *config.Config
 	azurecastClient *azurecast.Client
 	radioStations   map[int]RadioStation
+	mutex           sync.Mutex
+	radioCancel     map[string]chan struct{}
 }
 
 func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
@@ -45,7 +48,8 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		Logger:        logger,
 		config:        cfg,
 		commands:      map[string]CommandDef{},
-		radioStations: make(map[int]RadioStation), // <-- init map
+		radioStations: make(map[int]RadioStation),
+		radioCancel:   make(map[string]chan struct{}),
 	}
 
 	// Initialize Azurecast client
@@ -102,6 +106,9 @@ func (b *Bot) RegisterCommands() {
 	// route all interaction events to our dispatcher
 	b.Session.AddHandler(b.commandHandler)
 
+	// route voice state updates to our handler
+	b.Session.AddHandler(b.onVoiceStateUpdate)
+
 	// ensure we know our application ID
 	if b.Session.State.User == nil {
 		if err := b.Session.Open(); err != nil {
@@ -150,6 +157,8 @@ func (b *Bot) RegisterCommands() {
 	}
 }
 
+//event handlers
+
 func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
 	case discordgo.InteractionMessageComponent:
@@ -164,6 +173,25 @@ func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		def.Handle(b, s, i)
 	default:
 		b.Logger.Warn("unknown interaction type", "type", i.Type)
+	}
+}
+
+// Fired whenever someone's voice state changes.
+func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
+	if vs.UserID != s.State.User.ID {
+		return
+	}
+	if vs.ChannelID == "" {
+		guildID := vs.GuildID
+		bot.mutex.Lock()
+		if cancel, ok := bot.radioCancel[guildID]; ok {
+			close(cancel) // Signal the stream to stop
+			delete(bot.radioCancel, guildID)
+		}
+		bot.mutex.Unlock()
+		if vc, ok := s.VoiceConnections[guildID]; ok {
+			_ = vc.Disconnect()
+		}
 	}
 }
 

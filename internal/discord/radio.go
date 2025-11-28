@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
 // and sends individual Opus packets to Discord (vc.OpusSend expects []byte).
-func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string) error {
+func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-chan struct{}) error {
 	cmd := exec.Command("B:\\Users\\timbo\\Documents\\Programming\\Go\\goombabot\\ffmpeg.exe",
 		"-re",
 		"-i", url,
@@ -31,7 +30,7 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string) error {
 	if err != nil {
 		return err
 	}
-	cmd.Stderr = os.Stderr
+	//cmd.Stderr = os.Stderr //TODO: REMOVE ME
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -126,21 +125,21 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string) error {
 		}
 	}()
 
-	// Consumer: light pacing before handing to opusSender.
-	// opusSender still uses its own 20ms ticker for real RTP timing.
+	// Consumer loop:
 	for {
-		pkt, ok := <-packets
-		if !ok {
-			return nil
-		}
-
-		// Small sleep to avoid flooding opusSender when ffmpeg bursts.
-		time.Sleep(15 * time.Millisecond)
-
 		select {
-		case vc.OpusSend <- pkt:
-		case <-time.After(100 * time.Millisecond):
-			log.Println("OpusSend blocked, dropping frame")
+		case <-done:
+			return nil // Stop streaming if cancelled
+		case pkt, ok := <-packets:
+			if !ok {
+				return nil
+			}
+			time.Sleep(15 * time.Millisecond)
+			select {
+			case vc.OpusSend <- pkt:
+			case <-time.After(100 * time.Millisecond):
+				log.Println("OpusSend blocked, dropping frame")
+			}
 		}
 	}
 }
