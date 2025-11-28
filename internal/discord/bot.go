@@ -157,7 +157,7 @@ func (b *Bot) RegisterCommands() {
 	}
 }
 
-//event handlers
+// event handlers
 
 func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
