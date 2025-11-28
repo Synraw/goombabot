@@ -1,4 +1,4 @@
-## Goomba Bot for Discord
+# Goomba Bot for Discord
 
 Goombabot is a discord bot for discord allowing for streaming from an Azurecast radio into a voice channel.
 It intergrates smartly into the API of your azurecast server allowing for seemless station / endpoint selection, as well as providing administration
@@ -10,8 +10,6 @@ Rough plan of what needs to be required initially:
 - Allow user to use a discord "application command" to choose a station to begin playing in their current voice channel
 - Can play the station audio in the discord voice channel. For starters we will try limit this to OPUS azurecast endpoints only to simplify things
 
-List of possible commands:
+## List of possible commands
 
-- radio: play the radio (arguments tbd)
-- 
-
+### Radio - connect and play from the provided station

@@ -146,6 +146,36 @@ func (c *Client) do(req *http.Request, v any) error {
 	return nil
 }
 
+// GetStations retrieves the list of stations from AzuraCast.
+func (c *Client) GetStations(ctx context.Context) ([]Stations, error) {
+
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/stations", nil)
+	if err != nil {
+		return nil, err
+	}
+	var payload []Stations
+	if err := c.do(req, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// GetNowPlaying retrieves the "now playing" details for all stations.
+func (c *Client) GetNowPlaying(ctx context.Context) ([]NowPlaying, error) {
+
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/nowplaying", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload []NowPlaying
+	if err := c.do(req, &payload); err != nil {
+		return nil, err
+	}
+
+	return payload, nil
+}
+
 // GetStationNowPlaying retrieves the "now playing" details for the given station.
 // stationID should match the shortcode or numeric ID accepted by AzuraCast.
 func (c *Client) GetStationNowPlaying(ctx context.Context, stationID string) (*NowPlaying, error) {
@@ -153,7 +183,7 @@ func (c *Client) GetStationNowPlaying(ctx context.Context, stationID string) (*N
 		return nil, errors.New("azurecast: stationID must not be empty")
 	}
 
-	req, err := c.newRequest(ctx, http.MethodGet, "/nowplaying/"+url.PathEscape(stationID), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/nowplaying/"+url.PathEscape(stationID), nil)
 	if err != nil {
 		return nil, err
 	}

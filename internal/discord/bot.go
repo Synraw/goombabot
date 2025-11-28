@@ -8,20 +8,69 @@ import (
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/synraw/goombabot/internal/azurecast"
+	"github.com/synraw/goombabot/internal/config"
 )
 
-type CommandHandler func(s *discordgo.Session, i *discordgo.InteractionCreate)
+type CommandHandler func(b *Bot, s *discordgo.Session, i *discordgo.InteractionCreate)
 
 type CommandDef struct {
 	Command *discordgo.ApplicationCommand
 	Handle  CommandHandler
 }
-
+type RadioStation struct {
+	ID        int
+	Name      string
+	ListenUrl string
+}
 type Bot struct {
-	Token    string
-	Session  *discordgo.Session
-	Logger   *slog.Logger
-	commands map[string]CommandDef
+	Token           string
+	Session         *discordgo.Session
+	Logger          *slog.Logger
+	commands        map[string]CommandDef
+	config          *config.Config
+	azurecastClient *azurecast.Client
+	radioStations   map[int]RadioStation
+}
+
+func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
+	sess, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return nil, err
+	}
+
+	bot := &Bot{
+		Token:         token,
+		Session:       sess,
+		Logger:        logger,
+		config:        cfg,
+		commands:      map[string]CommandDef{},
+		radioStations: make(map[int]RadioStation), // <-- init map
+	}
+
+	// Initialize Azurecast client
+	bot.azurecastClient, err = azurecast.NewClient(cfg.AzurecastApiUrl,
+		azurecast.WithAPIKey(cfg.AzurecastToken),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	radioStations, _ := bot.azurecastClient.GetStations(context.Background())
+
+	for _, station := range radioStations {
+		bot.Logger.Info("Found station playing", "name", station.Name, "id", station.ID)
+		bot.radioStations[station.ID] = RadioStation{
+			ID:        station.ID,
+			Name:      station.Name,
+			ListenUrl: station.Mounts[1].URL,
+		}
+	}
+
+	bot.AddCommand("radio", "Play a station from your Azurecast server in the current voice channel", (*Bot).handleRadio)
+
+	return bot, nil
 }
 
 // NewCommandDef is the *only* place you construct a CommandDef.
@@ -44,47 +93,8 @@ func NewCommandDef(
 	}
 }
 
-func New(token string, logger *slog.Logger) (*Bot, error) {
-	sess, err := discordgo.New("Bot " + token)
-	if err != nil {
-		return nil, err
-	}
-
-	bot := &Bot{
-		Token:   token,
-		Session: sess,
-		Logger:  logger,
-		commands: map[string]CommandDef{
-			// simple ping command
-			"ping": NewCommandDef("ping", "Replies with Pong!", handlePing),
-
-			// radio command (from your planning doc) – arguments TBD
-			"radio": NewCommandDef(
-				"radio",
-				"Play a station from your Azurecast server in the current voice channel",
-				handleRadio,
-				// optional: add options here when you know them
-				// WithStringOption("station", "Station to play", true),
-			),
-		},
-	}
-
-	return bot, nil
-}
-
-// Example "option" helper to configure ApplicationCommand
-func WithStringOption(
-	name, description string,
-	required bool,
-) func(*discordgo.ApplicationCommand) {
-	return func(cmd *discordgo.ApplicationCommand) {
-		cmd.Options = append(cmd.Options, &discordgo.ApplicationCommandOption{
-			Type:        discordgo.ApplicationCommandOptionString,
-			Name:        name,
-			Description: description,
-			Required:    required,
-		})
-	}
+func (b *Bot) AddCommand(command string, description string, handler CommandHandler, opts ...func(*discordgo.ApplicationCommand)) {
+	b.commands[command] = NewCommandDef(command, description, handler, opts...)
 }
 
 // RegisterCommands registers all commands with Discord.
@@ -102,30 +112,59 @@ func (b *Bot) RegisterCommands() {
 
 	appID := b.Session.State.User.ID
 
+	//guildCommands, _ := b.Session.ApplicationCommands(appID, b.config.DiscordGuildID)
+	// for _, cmd := range guildCommands {
+	// 	err := b.Session.ApplicationCommandDelete(appID, b.config.DiscordGuildID, cmd.ID)
+	// 	if err != nil {
+	// 		b.Logger.Error("failed to delete existing guild command", "name", cmd.Name, "id", cmd.ID, "err", err)
+	// 	} else {
+	// 		b.Logger.Debug("deleted existing guild command", "name", cmd.Name, "id", cmd.ID)
+	// 	}
+	// }
+
+	//remove existing global commands incase there are any
+	globalCommands, _ := b.Session.ApplicationCommands(appID, "")
+	for _, cmd := range globalCommands {
+		err := b.Session.ApplicationCommandDelete(appID, "", cmd.ID)
+		if err != nil {
+			b.Logger.Error("failed to delete existing global command", "name", cmd.Name, "id", cmd.ID, "err", err)
+		} else {
+			b.Logger.Debug("deleted existing global command", "name", cmd.Name, "id", cmd.ID)
+		}
+	}
+
 	for name, def := range b.commands {
 		if def.Command == nil {
 			b.Logger.Warn("command has no definition", "name", name)
 			continue
 		}
-		if _, err := b.Session.ApplicationCommandCreate(appID, "", def.Command); err != nil {
+
+		//TODO: itterate our joined guilds and register command for all of them
+		cmd, err := b.Session.ApplicationCommandCreate(appID, b.config.DiscordGuildID, def.Command)
+		if err != nil {
 			b.Logger.Error("failed to register command", "name", name, "err", err)
+			continue
 		}
+
+		b.Logger.Info("registered command", "name", name, "id", cmd.ID)
 	}
 }
 
 func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
+	switch i.Type {
+	case discordgo.InteractionMessageComponent:
+		b.handleComponent(s, i)
+	case discordgo.InteractionApplicationCommand:
+		data := i.ApplicationCommandData()
+		def, ok := b.commands[data.Name]
+		if !ok || def.Handle == nil {
+			b.Logger.Warn("no handler for command", "name", data.Name)
+			return
+		}
+		def.Handle(b, s, i)
+	default:
+		b.Logger.Warn("unknown interaction type", "type", i.Type)
 	}
-
-	data := i.ApplicationCommandData()
-	def, ok := b.commands[data.Name]
-	if !ok || def.Handle == nil {
-		b.Logger.Warn("no handler for command", "name", data.Name)
-		return
-	}
-
-	def.Handle(s, i)
 }
 
 func (b *Bot) Start(ctx context.Context) error {

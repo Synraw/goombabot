@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/synraw/goombabot/internal/config"
 	"github.com/synraw/goombabot/internal/discord"
@@ -20,6 +21,8 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	godotenv.Load(".env")
+
 	// Load configuration from environment variables
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -27,11 +30,23 @@ func main() {
 	}
 
 	if cfg.DiscordToken == "" {
-		log.Fatal("DISCORD_TOKEN is required")
+		log.Fatal("no discord token provided in DISCORD_TOKEN env var")
+	}
+
+	if cfg.DiscordGuildID == "" {
+		log.Println("using global discord app version as no guild ID provided in DISCORD_GUILD_ID env var")
+	}
+
+	if cfg.AzurecastApiUrl == "" {
+		log.Fatal("no Azurecast API URL provided in AZURECAST_API_URL env var")
+	}
+
+	if cfg.AzurecastToken == "" {
+		log.Fatal("no Azurecast API key provided in AZURECAST_API_KEY env var")
 	}
 
 	// Initialize Discord bot
-	bot, err := discord.New(cfg.DiscordToken, logger)
+	bot, err := discord.New(cfg.DiscordToken, logger, cfg)
 	if err != nil {
 		log.Fatalf("Failed to create Discord bot: %v", err)
 	}
