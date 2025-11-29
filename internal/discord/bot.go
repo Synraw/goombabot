@@ -19,11 +19,13 @@ type CommandDef struct {
 	Command *discordgo.ApplicationCommand
 	Handle  CommandHandler
 }
+
 type RadioStation struct {
 	ID        int
 	Name      string
 	StreamURL string
 }
+
 type Bot struct {
 	Token           string
 	Session         *discordgo.Session
@@ -36,6 +38,7 @@ type Bot struct {
 	radioCancel     map[string]chan struct{}
 }
 
+// New creates a new Discord bot instance.
 func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	sess, err := discordgo.New("Bot " + token)
 	if err != nil {
@@ -79,8 +82,30 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	}
 
 	bot.AddCommand("radio", "Play a station from your Azurecast server in the current voice channel", (*Bot).handleRadio)
+	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 
 	return bot, nil
+}
+
+// Start opens the Discord session and begins listening for events.
+func (b *Bot) Start(ctx context.Context) error {
+	if err := b.Session.Open(); err != nil {
+		return err
+	}
+
+	b.RegisterCommands()
+	b.Logger.Info("Discord bot started")
+	defer b.Session.Close()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-ctx.Done():
+	case <-stop:
+		b.Logger.Info("Shutting down Discord bot")
+	}
+	return nil
 }
 
 // NewCommandDef is the *only* place you construct a CommandDef.
@@ -103,6 +128,7 @@ func NewCommandDef(
 	}
 }
 
+// AddCommand adds a command definition to the bot.
 func (b *Bot) AddCommand(command string, description string, handler CommandHandler, opts ...func(*discordgo.ApplicationCommand)) {
 	b.commands[command] = NewCommandDef(command, description, handler, opts...)
 }
@@ -110,10 +136,13 @@ func (b *Bot) AddCommand(command string, description string, handler CommandHand
 // RegisterCommands registers all commands with Discord.
 func (b *Bot) RegisterCommands() {
 	// route all interaction events to our dispatcher
-	b.Session.AddHandler(b.commandHandler)
-
+	b.Session.AddHandler(b.onInteractionUpdate)
 	// route voice state updates to our handler
 	b.Session.AddHandler(b.onVoiceStateUpdate)
+	// route events for when we join a guild
+	b.Session.AddHandler(b.onGuildCreate)
+	// route events for when we leave a guild
+	b.Session.AddHandler(b.onGuildDelete)
 
 	// ensure we know our application ID
 	if b.Session.State.User == nil {
@@ -125,16 +154,6 @@ func (b *Bot) RegisterCommands() {
 
 	appID := b.Session.State.User.ID
 
-	//guildCommands, _ := b.Session.ApplicationCommands(appID, b.config.DiscordGuildID)
-	// for _, cmd := range guildCommands {
-	// 	err := b.Session.ApplicationCommandDelete(appID, b.config.DiscordGuildID, cmd.ID)
-	// 	if err != nil {
-	// 		b.Logger.Error("failed to delete existing guild command", "name", cmd.Name, "id", cmd.ID, "err", err)
-	// 	} else {
-	// 		b.Logger.Debug("deleted existing guild command", "name", cmd.Name, "id", cmd.ID)
-	// 	}
-	// }
-
 	//remove existing global commands incase there are any
 	globalCommands, _ := b.Session.ApplicationCommands(appID, "")
 	for _, cmd := range globalCommands {
@@ -145,27 +164,35 @@ func (b *Bot) RegisterCommands() {
 			b.Logger.Debug("deleted existing global command", "name", cmd.Name, "id", cmd.ID)
 		}
 	}
+}
+
+/// event handlers
+
+// onGuildCreate handles guild creation events.
+func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
+	b.Logger.Info("joined guild", "name", g.Name, "id", g.ID)
 
 	for name, def := range b.commands {
 		if def.Command == nil {
 			b.Logger.Warn("command has no definition", "name", name)
 			continue
 		}
-
-		//TODO: itterate our joined guilds and register command for all of them
-		cmd, err := b.Session.ApplicationCommandCreate(appID, b.config.DiscordGuildID, def.Command)
+		cmd, err := b.Session.ApplicationCommandCreate(s.State.User.ID, g.ID, def.Command)
 		if err != nil {
-			b.Logger.Error("failed to register command", "name", name, "err", err)
+			b.Logger.Error("failed to register command", "name", name, "guild_id", g.ID, "err", err)
 			continue
 		}
-
-		b.Logger.Info("registered command", "name", name, "id", cmd.ID)
+		b.Logger.Info("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
 	}
 }
 
-// event handlers
+// onGuildDelete handles guild deletion events.
+func (b *Bot) onGuildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
+	b.Logger.Info("left guild", "name", g.Name, "id", g.ID)
+}
 
-func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+// onInteractionUpdate handles all interaction events and routes them to the appropriate handler.
+func (b *Bot) onInteractionUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
 	case discordgo.InteractionMessageComponent:
 		b.handleComponent(s, i)
@@ -182,12 +209,12 @@ func (b *Bot) commandHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 	}
 }
 
-// Fired whenever someone's voice state changes.
+// onVoiceStateUpdate handles voice state updates to stop radio streaming when the bot leaves a voice channel.
 func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 	if vs.UserID != s.State.User.ID {
 		return
 	}
-	if vs.ChannelID == "" {
+	if vs.ChannelID == "" { // Bot has disconnected from voice channel
 		guildID := vs.GuildID
 		bot.mutex.Lock()
 		if cancel, ok := bot.radioCancel[guildID]; ok {
@@ -199,24 +226,4 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 			_ = vc.Disconnect()
 		}
 	}
-}
-
-func (b *Bot) Start(ctx context.Context) error {
-	if err := b.Session.Open(); err != nil {
-		return err
-	}
-
-	b.RegisterCommands()
-	b.Logger.Info("Discord bot started")
-	defer b.Session.Close()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-ctx.Done():
-	case <-stop:
-		b.Logger.Info("Shutting down Discord bot")
-	}
-	return nil
 }

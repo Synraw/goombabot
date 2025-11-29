@@ -2,9 +2,19 @@ package discord
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// helper functions
+
+func deleteMessageAfter(s *discordgo.Session, i *discordgo.InteractionCreate, delay time.Duration) {
+	go func() {
+		time.Sleep(delay)
+		_ = s.InteractionResponseDelete(i.Interaction)
+	}()
+}
 
 func buildInteractionResponse(content string) *discordgo.InteractionResponse {
 	return &discordgo.InteractionResponse{
@@ -59,6 +69,51 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 }
 
+func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Find the voice channel the user is in
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.Logger.Warn("failed to get guild", "err", err)
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	// Find the voice channel the user is in
+	var voiceChannelID string
+	for _, vs := range guild.VoiceStates {
+		if vs.UserID == i.Member.User.ID {
+			voiceChannelID = vs.ChannelID
+			break
+		}
+	}
+
+	if voiceChannelID == "" {
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Not connected to a voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	// Disconnect from voice
+	if vc, ok := s.VoiceConnections[guild.ID]; ok {
+		bot.mutex.Lock()
+		close(bot.radioCancel[guild.ID])  // Signal the stream to stop
+		delete(bot.radioCancel, guild.ID) // Remove from map
+		bot.mutex.Unlock()
+		_ = vc.Disconnect()
+	}
+
+	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Stopped the radio."))
+
+	deleteMessageAfter(s, i, 5*time.Second)
+}
+
 func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.MessageComponentData().CustomID {
 	case "radio_station_select":
@@ -67,26 +122,10 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 }
 
 func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Only allow the user who invoked the original command
-	// to use this select menu.
-	originalUserID := i.Message.Interaction.User.ID // who ran /radio
-	clickUserID := i.Member.User.ID                 // who clicked
-
-	if clickUserID != originalUserID {
-		// Reply ephemerally to the clicker: "this isn't your menu"
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Only the user who started this radio command can select a station.",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
-		return
-	}
-
 	values := i.MessageComponentData().Values
 	if len(values) == 0 {
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("No station selected."))
+		deleteMessageAfter(s, i, 5*time.Second)
 		return
 	}
 
@@ -98,18 +137,21 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 	if err != nil {
 		bot.Logger.Warn("failed to get guild", "err", err)
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
+		deleteMessageAfter(s, i, 5*time.Second)
 		return
 	}
 
 	var voiceChannelID string
 	for _, vs := range guild.VoiceStates {
-		if vs.UserID == clickUserID {
+		if vs.UserID == i.Member.User.ID {
 			voiceChannelID = vs.ChannelID
 			break
 		}
 	}
+
 	if voiceChannelID == "" {
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
 		return
 	}
 
@@ -118,6 +160,7 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 	if err != nil {
 		bot.Logger.Warn("failed to join voice", "err", err)
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Failed to join voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
 		return
 	}
 
@@ -138,10 +181,6 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 		_ = streamRadioWithFFmpeg(vc, station.StreamURL, done)
 	}()
 
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "Starting radio: **" + station.Name + "**",
-		},
-	})
+	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
+	deleteMessageAfter(s, i, 5*time.Second)
 }

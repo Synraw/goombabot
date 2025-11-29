@@ -30,7 +30,6 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 	if err != nil {
 		return err
 	}
-	//cmd.Stderr = os.Stderr //TODO: REMOVE ME
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -138,7 +137,6 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 			select {
 			case vc.OpusSend <- pkt:
 			case <-time.After(100 * time.Millisecond):
-				log.Println("OpusSend blocked, dropping frame")
 			}
 		}
 	}
