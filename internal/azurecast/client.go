@@ -146,32 +146,27 @@ func (c *Client) do(req *http.Request, v any) error {
 	return nil
 }
 
+// request is a helper function to send a request and handle the response.
+func (c *Client) request(ctx context.Context, method, path string, body io.Reader, v any) error {
+	req, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	return c.do(req, v)
+}
+
 // GetStations retrieves the list of stations from AzuraCast.
 func (c *Client) GetStations(ctx context.Context) ([]Stations, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/stations", nil)
-	if err != nil {
-		return nil, err
-	}
 	var payload []Stations
-	if err := c.do(req, &payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
+	err := c.request(ctx, http.MethodGet, "/api/stations", nil, &payload)
+	return payload, err
 }
 
 // GetNowPlaying retrieves the "now playing" details for all stations.
 func (c *Client) GetNowPlaying(ctx context.Context) ([]NowPlaying, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/nowplaying", nil)
-	if err != nil {
-		return nil, err
-	}
-
 	var payload []NowPlaying
-	if err := c.do(req, &payload); err != nil {
-		return nil, err
-	}
-
-	return payload, nil
+	err := c.request(ctx, http.MethodGet, "/api/nowplaying", nil, &payload)
+	return payload, err
 }
 
 // GetStationNowPlaying retrieves the "now playing" details for the given station.
@@ -180,16 +175,7 @@ func (c *Client) GetStationNowPlaying(ctx context.Context, stationID string) (*N
 	if strings.TrimSpace(stationID) == "" {
 		return nil, errors.New("azurecast: stationID must not be empty")
 	}
-
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/nowplaying/"+url.PathEscape(stationID), nil)
-	if err != nil {
-		return nil, err
-	}
-
 	var payload NowPlaying
-	if err := c.do(req, &payload); err != nil {
-		return nil, err
-	}
-
-	return &payload, nil
+	err := c.request(ctx, http.MethodGet, "/api/nowplaying/"+url.PathEscape(stationID), nil, &payload)
+	return &payload, err
 }
