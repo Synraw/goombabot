@@ -104,6 +104,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-stop:
 		b.Logger.Info("Shutting down Discord bot")
+		return nil
 	}
 	return nil
 }
