@@ -102,9 +102,9 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 				delete(bot.radioCancel, guild.ID)
 				bot.mutex.Unlock()
 			}()
-			bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
+			bot.Logger.Info("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 			_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
-			bot.Logger.Debug("stopped streaming from station", "name", station.Name, "guild", guild.Name)
+			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 		}()
 
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
@@ -245,9 +245,9 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 			delete(bot.radioCancel, guild.ID)
 			bot.mutex.Unlock()
 		}()
-		bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
+		bot.Logger.Info("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 		_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
-		bot.Logger.Debug("stopped streaming from station", "name", station.Name, "guild", guild.Name)
+		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
 
 	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
