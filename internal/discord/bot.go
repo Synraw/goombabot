@@ -104,7 +104,12 @@ func (b *Bot) Start(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-stop:
 		b.Logger.Info("Shutting down Discord bot")
-		return nil
+		b.mutex.Lock()
+		defer b.mutex.Unlock()
+		for guildID, cancel := range b.radioCancel {
+			b.Logger.Info("stopping radio stream", "guild_id", guildID)
+			close(cancel)
+		}
 	}
 	return nil
 }
