@@ -3,7 +3,6 @@ package discord
 import (
 	"bufio"
 	"io"
-	"log"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -14,7 +13,7 @@ import (
 
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
 // and sends individual Opus packets to Discord (vc.OpusSend expects []byte).
-func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-chan struct{}) error {
+func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-chan struct{}) error {
 	ffmpegFilename := "ffmpeg"
 	if runtime.GOOS == "windows" {
 		ffmpegFilename = "ffmpeg.exe"
@@ -78,19 +77,19 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 			header := make([]byte, 27)
 			if _, err := io.ReadFull(reader, header); err != nil {
 				if err != io.EOF {
-					log.Printf("ffmpeg/ogg read header error: %v", err)
+					bot.Logger.Error("ffmpeg/ogg read header error", "err", err)
 				}
 				return
 			}
 			if string(header[0:4]) != "OggS" {
-				log.Println("not an Ogg page, aborting")
+				bot.Logger.Error("not an Ogg page, aborting")
 				return
 			}
 
 			segCount := int(header[26])
 			lacingVals := make([]byte, segCount)
 			if _, err := io.ReadFull(reader, lacingVals); err != nil {
-				log.Printf("ffmpeg/ogg read lacing error: %v", err)
+				bot.Logger.Error("ffmpeg/ogg read lacing error", "err", err)
 				return
 			}
 
@@ -101,7 +100,7 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 
 			pageData := make([]byte, pageSize)
 			if _, err := io.ReadFull(reader, pageData); err != nil {
-				log.Printf("ffmpeg/ogg read page data error: %v", err)
+				bot.Logger.Error("ffmpeg/ogg read page data error", "err", err)
 				return
 			}
 

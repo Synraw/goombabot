@@ -103,7 +103,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 				bot.mutex.Unlock()
 			}()
 			bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-			_ = streamRadioWithFFmpeg(vc, station.StreamURL, done)
+			_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
 			bot.Logger.Debug("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 		}()
 
@@ -246,7 +246,7 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 			bot.mutex.Unlock()
 		}()
 		bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		_ = streamRadioWithFFmpeg(vc, station.StreamURL, done)
+		_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
 		bot.Logger.Debug("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
 
