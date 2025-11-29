@@ -179,6 +179,7 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 		}()
 		bot.Logger.Debug("now streaming from station", "url", station.StreamURL, "name", station.Name)
 		_ = streamRadioWithFFmpeg(vc, station.StreamURL, done)
+		bot.Logger.Debug("stopped streaming from station", "name", station.Name)
 	}()
 
 	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -35,8 +36,20 @@ func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-cha
 		return err
 	}
 	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			done := make(chan struct{})
+			go func() {
+				_ = cmd.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+				// ffmpeg exited gracefully
+			case <-time.After(500 * time.Millisecond):
+				_ = cmd.Process.Kill()
+			}
+		}
 	}()
 
 	vc.Speaking(true)
