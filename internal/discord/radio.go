@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -14,7 +15,12 @@ import (
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
 // and sends individual Opus packets to Discord (vc.OpusSend expects []byte).
 func streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string, done <-chan struct{}) error {
-	cmd := exec.Command(".\\ffmpeg.exe",
+	ffmpegFilename := "./ffmpeg"
+	if runtime.GOOS == "windows" {
+		ffmpegFilename = ".\\ffmpeg.exe"
+	}
+
+	cmd := exec.Command(ffmpegFilename,
 		"-re",
 		"-i", url,
 		"-vn",

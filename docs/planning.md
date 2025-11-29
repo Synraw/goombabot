@@ -12,4 +12,5 @@ Rough plan of what needs to be required initially:
 
 ## List of possible commands
 
-### Radio - connect and play from the provided station
+- Radio - connect and play from the provided station
+- Stop - stops the currently playing radio stream and disconnects the bot

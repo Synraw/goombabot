@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,6 +28,17 @@ func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		panic(err)
+	}
+
+	// Verify ffmpeg is available
+
+	ffmpegFilename := "./ffmpeg"
+	if runtime.GOOS == "windows" {
+		ffmpegFilename = ".\\ffmpeg.exe"
+	}
+
+	if _, err := os.Stat(ffmpegFilename); err != nil {
+		log.Fatalf("ffmpeg not found in current directory: %v", err)
 	}
 
 	if cfg.DiscordToken == "" {

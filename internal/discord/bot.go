@@ -166,7 +166,7 @@ func (b *Bot) RegisterCommands() {
 	}
 }
 
-/// event handlers
+// event handlers
 
 // onGuildCreate handles guild creation events.
 func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
