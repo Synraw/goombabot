@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 
 	"github.com/joho/godotenv"
@@ -32,13 +33,14 @@ func main() {
 
 	// Verify ffmpeg is available
 
-	ffmpegFilename := "./ffmpeg"
+	ffmpegFilename := "ffmpeg"
 	if runtime.GOOS == "windows" {
-		ffmpegFilename = ".\\ffmpeg.exe"
+		ffmpegFilename = "ffmpeg.exe"
 	}
 
-	if _, err := os.Stat(ffmpegFilename); err != nil {
-		log.Fatalf("ffmpeg not found in current directory: %v", err)
+	_, err = exec.LookPath(ffmpegFilename)
+	if err != nil {
+		log.Fatalf("ffmpeg not found in current directory or PATH: %v", err)
 	}
 
 	if cfg.DiscordToken == "" {
