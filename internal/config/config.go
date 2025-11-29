@@ -6,7 +6,6 @@ type Config struct {
 	ServiceName     string `envconfig:"SERVICE_NAME" default:"goomba-bot"`
 	MetricsPort     int    `envconfig:"METRICS_PORT" default:"8080"`
 	DiscordToken    string `envconfig:"DISCORD_TOKEN" default:""`
-	DiscordGuildID  string `envconfig:"DISCORD_GUILD_ID" default:""`
 	AzurecastToken  string `envconfig:"AZURECAST_TOKEN" default:""`
 	AzurecastApiUrl string `envconfig:"AZURECAST_API_URL" default:""`
 }

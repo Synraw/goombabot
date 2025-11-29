@@ -33,10 +33,6 @@ func main() {
 		log.Fatal("no discord token provided in DISCORD_TOKEN env var")
 	}
 
-	if cfg.DiscordGuildID == "" {
-		log.Println("using global discord app version as no guild ID provided in DISCORD_GUILD_ID env var")
-	}
-
 	if cfg.AzurecastApiUrl == "" {
 		log.Fatal("no Azurecast API URL provided in AZURECAST_API_URL env var")
 	}
