@@ -39,6 +39,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string,
 	if err != nil {
 		return err
 	}
+	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -57,6 +58,13 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, url string,
 			case <-time.After(500 * time.Millisecond):
 				_ = cmd.Process.Kill()
 			}
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			bot.Logger.Warn("ffmpeg stderr", "msg", scanner.Text())
 		}
 	}()
 
