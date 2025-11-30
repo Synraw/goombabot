@@ -34,6 +34,7 @@ func buildInteractionResponseEx(i *discordgo.InteractionResponseData) *discordgo
 
 // command handlers
 
+// handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	minValues := 1
 
@@ -74,6 +75,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 			}
 		}
 
+		// User not in a voice channel
 		if voiceChannelID == "" {
 			_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
 			deleteMessageAfter(s, i, 5*time.Second)
@@ -91,19 +93,21 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 
 		// Start streaming
 		done := make(chan struct{})
-		bot.mutex.Lock()
+		bot.radioMutex.Lock()
 		bot.radioCancel[guild.ID] = done
-		bot.mutex.Unlock()
+		bot.radioMutex.Unlock()
 
 		go func() {
 			defer func() {
 				_ = vc.Disconnect()
-				bot.mutex.Lock()
+				bot.radioMutex.Lock()
 				delete(bot.radioCancel, guild.ID)
-				bot.mutex.Unlock()
+				bot.radioMutex.Unlock()
 			}()
-			bot.Logger.Info("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-			_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
+			bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
+			if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
+				bot.Logger.Warn("streaming error", "err", err)
+			}
 			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 		}()
 
@@ -137,6 +141,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 }
 
+// handleStop stops the current radio stream and disconnects from voice.
 func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Find the voice channel the user is in
 	guild, err := s.State.Guild(i.GuildID)
@@ -170,18 +175,18 @@ func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// Disconnect from voice
 	if vc, ok := s.VoiceConnections[guild.ID]; ok {
-		bot.mutex.Lock()
+		bot.radioMutex.Lock()
 		close(bot.radioCancel[guild.ID])  // Signal the stream to stop
 		delete(bot.radioCancel, guild.ID) // Remove from map
-		bot.mutex.Unlock()
+		bot.radioMutex.Unlock()
 		_ = vc.Disconnect()
 	}
 
 	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Stopped the radio."))
-
 	deleteMessageAfter(s, i, 5*time.Second)
 }
 
+// handleComponent routes interaction component events to the appropriate handler.
 func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.MessageComponentData().CustomID {
 	case "radio_station_select":
@@ -189,6 +194,7 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 }
 
+// handleRadioSelect processes the station selection and starts streaming.
 func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	values := i.MessageComponentData().Values
 	if len(values) == 0 {
@@ -234,19 +240,21 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 
 	done := make(chan struct{})
 
-	bot.mutex.Lock()
+	bot.radioMutex.Lock()
 	bot.radioCancel[guild.ID] = done
-	bot.mutex.Unlock()
+	bot.radioMutex.Unlock()
 
 	go func() {
 		defer func() {
 			_ = vc.Disconnect()
-			bot.mutex.Lock()
+			bot.radioMutex.Lock()
 			delete(bot.radioCancel, guild.ID)
-			bot.mutex.Unlock()
+			bot.radioMutex.Unlock()
 		}()
-		bot.Logger.Info("now streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		_ = bot.streamRadioWithFFmpeg(vc, station.StreamURL, done)
+		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
+		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
+			bot.Logger.Warn("streaming error", "err", err)
+		}
 		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
 

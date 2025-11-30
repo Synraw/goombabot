@@ -27,15 +27,15 @@ type RadioStation struct {
 }
 
 type Bot struct {
-	Token           string
-	Session         *discordgo.Session
-	Logger          *slog.Logger
-	commands        map[string]CommandDef
-	config          *config.Config
-	azurecastClient *azurecast.Client
-	radioStations   map[int]RadioStation
-	mutex           sync.Mutex
-	radioCancel     map[string]chan struct{}
+	Token          string
+	Session        *discordgo.Session
+	Logger         *slog.Logger
+	commands       map[string]CommandDef
+	config         *config.Config
+	azureApiClient *azurecast.Client
+	radioStations  map[int]RadioStation
+	radioMutex     sync.Mutex
+	radioCancel    map[string]chan struct{}
 }
 
 // New creates a new Discord bot instance.
@@ -56,15 +56,14 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	}
 
 	// Initialize Azurecast client
-	bot.azurecastClient, err = azurecast.NewClient(cfg.AzurecastApiUrl,
+	bot.azureApiClient, err = azurecast.NewClient(cfg.AzurecastApiUrl,
 		azurecast.WithAPIKey(cfg.AzurecastToken),
 	)
-
 	if err != nil {
 		return nil, err
 	}
 
-	radioStations, _ := bot.azurecastClient.GetStations(context.Background())
+	radioStations, _ := bot.azureApiClient.GetStations(context.Background())
 
 	for _, station := range radioStations {
 		opusMountUrl := station.ListenURL
@@ -104,8 +103,8 @@ func (b *Bot) Start(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-stop:
 		b.Logger.Info("Shutting down Discord bot")
-		b.mutex.Lock()
-		defer b.mutex.Unlock()
+		b.radioMutex.Lock()
+		defer b.radioMutex.Unlock()
 		for guildID, cancel := range b.radioCancel {
 			b.Logger.Info("stopping radio stream", "guild_id", guildID)
 			close(cancel)
@@ -222,12 +221,12 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 	}
 	if vs.ChannelID == "" { // Bot has disconnected from voice channel
 		guildID := vs.GuildID
-		bot.mutex.Lock()
+		bot.radioMutex.Lock()
 		if cancel, ok := bot.radioCancel[guildID]; ok {
 			close(cancel) // Signal the stream to stop
 			delete(bot.radioCancel, guildID)
 		}
-		bot.mutex.Unlock()
+		bot.radioMutex.Unlock()
 		if vc, ok := s.VoiceConnections[guildID]; ok {
 			_ = vc.Disconnect()
 		}

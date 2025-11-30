@@ -22,11 +22,11 @@ import (
 func main() {
 	// Setup logging (both slog & log global loggers can be used)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level:     slog.LevelDebug,
-		AddSource: true,
+		Level: slog.LevelDebug,
 	}))
 	slog.SetDefault(logger)
 
+	// Load .env file if present (windows workaround)
 	godotenv.Load(".env")
 
 	// Load configuration from environment variables
@@ -36,12 +36,10 @@ func main() {
 	}
 
 	// Verify ffmpeg is available
-
 	ffmpegFilename := "ffmpeg"
 	if runtime.GOOS == "windows" {
 		ffmpegFilename = "ffmpeg.exe"
 	}
-
 	_, err = exec.LookPath(ffmpegFilename)
 	if err != nil {
 		log.Fatalf("ffmpeg not found in current directory or PATH: %v", err)
@@ -78,6 +76,7 @@ func main() {
 		Addr: fmt.Sprintf(":%d", cfg.MetricsPort),
 	}
 
+	// Start HTTP server in a separate goroutine
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe error: %v", err)

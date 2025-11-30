@@ -1,17 +1,16 @@
-FROM golang:latest AS build
-
-ARG METRICS_PORT="8080"
+FROM golang:1.25.4-alpine AS build
 
 WORKDIR /app/server
-COPY . .
+COPY go.mod go.sum ./
 RUN go mod download
-RUN go build -o ./bot ./cmd/bot/main.go
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o bot ./cmd/bot/main.go
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:latest AS server
+FROM alpine:latest AS server
+
+RUN apk update && apk add --no-cache ffmpeg
 WORKDIR /app/server
 COPY --from=build /app/server/bot ./
 RUN chmod +x ./bot
 
-EXPOSE $METRICS_PORT
-
-CMD [ "./bot" ]
+CMD ["./bot"]

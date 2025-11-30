@@ -4,3 +4,5 @@ services:
     container_name: ${SERVICE_NAME}
     env_file:
       - .env
+    ports:
+      - "${METRICS_PORT}:${METRICS_PORT}"
