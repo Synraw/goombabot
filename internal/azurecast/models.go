@@ -81,11 +81,11 @@ type NowPlaying struct {
 		Remaining int `json:"remaining"`
 	} `json:"now_playing"`
 	PlayingNext struct {
-		CuedAt    int    `json:"cued_at"`
-		PlayedAt  int    `json:"played_at"`
-		Duration  int    `json:"duration"`
-		Playlist  string `json:"playlist"`
-		IsRequest bool   `json:"is_request"`
+		CuedAt    float32 `json:"cued_at"`
+		PlayedAt  float32 `json:"played_at"`
+		Duration  float32 `json:"duration"`
+		Playlist  string  `json:"playlist"`
+		IsRequest bool    `json:"is_request"`
 		Song      struct {
 			Text         string   `json:"text"`
 			Artist       string   `json:"artist"`
@@ -100,12 +100,12 @@ type NowPlaying struct {
 		} `json:"song"`
 	} `json:"playing_next"`
 	SongHistory []struct {
-		ShID      int    `json:"sh_id"`
-		PlayedAt  int    `json:"played_at"`
-		Duration  int    `json:"duration"`
-		Playlist  string `json:"playlist"`
-		Streamer  string `json:"streamer"`
-		IsRequest bool   `json:"is_request"`
+		ShID      int     `json:"sh_id"`
+		PlayedAt  float32 `json:"played_at"`
+		Duration  float32 `json:"duration"`
+		Playlist  string  `json:"playlist"`
+		Streamer  string  `json:"streamer"`
+		IsRequest bool    `json:"is_request"`
 		Song      struct {
 			Text         string   `json:"text"`
 			Artist       string   `json:"artist"`

@@ -1,14 +1,21 @@
 package discord
 
 import (
+	"context"
 	"strconv"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
 
+const (
+	shortDelay = 5 * time.Second
+	longDelay  = 30 * time.Second
+)
+
 // helper functions
 
+// deleteMessageAfter deletes the interaction response after the given delay.
 func deleteMessageAfter(s *discordgo.Session, i *discordgo.InteractionCreate, delay time.Duration) {
 	go func() {
 		time.Sleep(delay)
@@ -16,7 +23,8 @@ func deleteMessageAfter(s *discordgo.Session, i *discordgo.InteractionCreate, de
 	}()
 }
 
-func buildInteractionResponse(content string) *discordgo.InteractionResponse {
+// createResponse builds a simple text response.
+func createResponse(content string) *discordgo.InteractionResponse {
 	return &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -25,71 +33,78 @@ func buildInteractionResponse(content string) *discordgo.InteractionResponse {
 	}
 }
 
-func buildInteractionResponseEx(i *discordgo.InteractionResponseData) *discordgo.InteractionResponse {
+// createResponseEx builds a response with custom data.
+func createResponseEx(i *discordgo.InteractionResponseData) *discordgo.InteractionResponse {
 	return &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: i,
 	}
 }
 
-func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
-	// Find the voice channel the user is in
-	guild, err := s.State.Guild(i.GuildID)
-	if err != nil {
-		bot.Logger.Warn("failed to get guild", "err", err)
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
-		deleteMessageAfter(s, i, 5*time.Second)
-		return
-	}
-
-	// Find the voice channel the user is in
-	var voiceChannelID string
+// getUserVoiceChannelID returns the voice channel ID the user is currently in, or "" if not found.
+func getUserVoiceChannelID(guild *discordgo.Guild, userID string) string {
 	for _, vs := range guild.VoiceStates {
-		if vs.UserID == i.Member.User.ID {
-			voiceChannelID = vs.ChannelID
-			break
+		if vs.UserID == userID {
+			return vs.ChannelID
 		}
 	}
+	return ""
+}
 
-	// User not in a voice channel
-	if voiceChannelID == "" {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
+// respondWithError logs, sends a response, and deletes it after delay.
+func (bot *Bot) respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, msg string, err error, delay time.Duration) {
+	if bot.Logger != nil && err != nil {
+		bot.Logger.Warn(msg, "err", err)
+	}
+	_ = s.InteractionRespond(i.Interaction, createResponse(msg))
+	deleteMessageAfter(s, i, delay)
+}
+
+// runRadioStream handles the process of joining voice and streaming the radio.
+func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
 		return
 	}
 
-	// Join voice
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+
 	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, false)
 	if err != nil {
-		bot.Logger.Warn("failed to join voice", "err", err)
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Failed to join voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
+		bot.respondWithError(s, i, "Failed to join voice channel.", err, shortDelay)
 		return
 	}
 
-	// Start streaming
-	done := make(chan struct{})
 	bot.radioMutex.Lock()
-	bot.radioCancel[guild.ID] = done
+	bot.radioSessions[guild.ID] = &StreamSession{
+		Done:    make(chan struct{}),
+		UserID:  i.Member.User.ID,
+		Station: &station,
+	}
 	bot.radioMutex.Unlock()
 
 	go func() {
 		defer func() {
 			_ = vc.Disconnect()
 			bot.radioMutex.Lock()
-			delete(bot.radioCancel, guild.ID)
+			delete(bot.radioSessions, guild.ID)
 			bot.radioMutex.Unlock()
 		}()
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
+		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, bot.radioSessions[guild.ID].Done); err != nil {
 			bot.Logger.Error("streaming error", "err", err)
 			return
 		}
 		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
 
-	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
-	deleteMessageAfter(s, i, 5*time.Second)
+	_ = s.InteractionRespond(i.Interaction, createResponse("Starting radio: **"+station.Name+"**"))
+	deleteMessageAfter(s, i, shortDelay)
 }
 
 // command handlers
@@ -97,9 +112,9 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// check if already in a voice channel and streaming
-	if _, ok := s.VoiceConnections[i.GuildID]; ok || bot.radioCancel[i.GuildID] != nil {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Already streaming in a voice channel. Use /stop to stop the current stream first."))
-		deleteMessageAfter(s, i, 5*time.Second)
+	if _, ok := s.VoiceConnections[i.GuildID]; ok || bot.radioSessions[i.GuildID] != nil {
+		_ = s.InteractionRespond(i.Interaction, createResponse("Already streaming in a voice channel. Use /stop to stop the current stream first."))
+		deleteMessageAfter(s, i, shortDelay)
 		return
 	}
 
@@ -139,54 +154,128 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 		Flags: discordgo.MessageFlagsEphemeral,
 	}
 
-	if err := s.InteractionRespond(i.Interaction, buildInteractionResponseEx(resp)); err != nil {
+	if err := s.InteractionRespond(i.Interaction, createResponseEx(resp)); err != nil {
 		bot.Logger.Warn("failed to send radio select", "err", err)
 	}
 }
 
 // handleStop stops the current radio stream and disconnects from voice.
 func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Find the voice channel the user is in
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
-		bot.Logger.Warn("failed to get guild", "err", err)
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
-		deleteMessageAfter(s, i, 5*time.Second)
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
 		return
 	}
 
-	// Find the voice channel the user is in
-	var voiceChannelID string
-	for _, vs := range guild.VoiceStates {
-		if vs.UserID == i.Member.User.ID {
-			voiceChannelID = vs.ChannelID
-			break
-		}
-	}
-
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
 	if voiceChannelID == "" {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
 		return
 	}
 
 	if s.VoiceConnections[guild.ID] == nil {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Not connected to a voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
 		return
 	}
 
-	// Disconnect from voice
 	if vc, ok := s.VoiceConnections[guild.ID]; ok {
 		bot.radioMutex.Lock()
-		close(bot.radioCancel[guild.ID])  // Signal the stream to stop
-		delete(bot.radioCancel, guild.ID) // Remove from map
+		close(bot.radioSessions[guild.ID].Done)
+		delete(bot.radioSessions, guild.ID)
 		bot.radioMutex.Unlock()
 		_ = vc.Disconnect()
 	}
 
-	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Stopped the radio."))
-	deleteMessageAfter(s, i, 5*time.Second)
+	_ = s.InteractionRespond(i.Interaction, createResponse("Stopped the radio."))
+	deleteMessageAfter(s, i, shortDelay)
+}
+
+// handleSkip skips the currently playing song on the radio station.
+func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		return
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
+		return
+	}
+
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		bot.respondWithError(s, i, "No active radio session to skip.", nil, shortDelay)
+		return
+	}
+
+	if session.UserID != i.Member.User.ID {
+		bot.respondWithError(s, i, "Only the user who started the stream can skip.", nil, shortDelay)
+		return
+	}
+
+	err = bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(session.Station.ID))
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to skip the current song.", err, shortDelay)
+		return
+	}
+
+	_ = s.InteractionRespond(i.Interaction, createResponse("Skipped the current song."))
+	deleteMessageAfter(s, i, shortDelay)
+}
+
+func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		return
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
+		return
+	}
+
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
+		return
+	}
+
+	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(session.Station.ID))
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to get now playing information.", err, shortDelay)
+		return
+	}
+
+	response := "Now Playing:\n"
+	if np.NowPlaying.Song.Title != "" {
+		response += "**" + np.NowPlaying.Song.Title + "**"
+	} else {
+		response += "Unknown Title"
+	}
+	if np.NowPlaying.Song.Artist != "" {
+		response += " by **" + np.NowPlaying.Song.Artist + "**"
+	} else {
+		response += " by Unknown Artist"
+	}
+	if np.NowPlaying.Song.Album != "" {
+		response += " from the album **" + np.NowPlaying.Song.Album + "**"
+	}
+	_ = s.InteractionRespond(i.Interaction, createResponse(response))
+	deleteMessageAfter(s, i, longDelay)
 }
 
 // handleComponent routes interaction component events to the appropriate handler.
@@ -201,8 +290,8 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	values := i.MessageComponentData().Values
 	if len(values) == 0 {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("No station selected."))
-		deleteMessageAfter(s, i, 5*time.Second)
+		_ = s.InteractionRespond(i.Interaction, createResponse("No station selected."))
+		deleteMessageAfter(s, i, shortDelay)
 		return
 	}
 

@@ -179,3 +179,11 @@ func (c *Client) GetStationNowPlaying(ctx context.Context, stationID string) (*N
 	err := c.request(ctx, http.MethodGet, "/api/nowplaying/"+url.PathEscape(stationID), nil, &payload)
 	return &payload, err
 }
+
+// SkipCurrentSong requests AzuraCast to skip the currently playing song
+func (c *Client) SkipCurrentSong(ctx context.Context, stationID string) error {
+	if strings.TrimSpace(stationID) == "" {
+		return errors.New("azurecast: stationID must not be empty")
+	}
+	return c.request(ctx, http.MethodPost, "/api/station/"+url.PathEscape(stationID)+"/backend/skip", nil, nil)
+}
