@@ -38,7 +38,7 @@ func main() {
 	// Verify ffmpeg is available
 	ffmpegFilename := "ffmpeg"
 	if runtime.GOOS == "windows" {
-		ffmpegFilename = "ffmpeg.exe"
+		ffmpegFilename = ".\\ffmpeg.exe"
 	}
 	_, err = exec.LookPath(ffmpegFilename)
 	if err != nil {

@@ -32,6 +32,66 @@ func buildInteractionResponseEx(i *discordgo.InteractionResponseData) *discordgo
 	}
 }
 
+func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
+	// Find the voice channel the user is in
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.Logger.Warn("failed to get guild", "err", err)
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	// Find the voice channel the user is in
+	var voiceChannelID string
+	for _, vs := range guild.VoiceStates {
+		if vs.UserID == i.Member.User.ID {
+			voiceChannelID = vs.ChannelID
+			break
+		}
+	}
+
+	// User not in a voice channel
+	if voiceChannelID == "" {
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	// Join voice
+	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, false)
+	if err != nil {
+		bot.Logger.Warn("failed to join voice", "err", err)
+		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Failed to join voice channel."))
+		deleteMessageAfter(s, i, 5*time.Second)
+		return
+	}
+
+	// Start streaming
+	done := make(chan struct{})
+	bot.radioMutex.Lock()
+	bot.radioCancel[guild.ID] = done
+	bot.radioMutex.Unlock()
+
+	go func() {
+		defer func() {
+			_ = vc.Disconnect()
+			bot.radioMutex.Lock()
+			delete(bot.radioCancel, guild.ID)
+			bot.radioMutex.Unlock()
+		}()
+		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
+		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
+			bot.Logger.Error("streaming error", "err", err)
+			return
+		}
+		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
+	}()
+
+	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
+	deleteMessageAfter(s, i, 5*time.Second)
+}
+
 // command handlers
 
 // handleRadio initiates the radio streaming process.
@@ -46,64 +106,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 	// if only one station, select it by default
 	if len(bot.radioStations) == 1 {
 		station := bot.radioStations[1]
-
-		// Find the voice channel the user is in
-		guild, err := s.State.Guild(i.GuildID)
-		if err != nil {
-			bot.Logger.Warn("failed to get guild", "err", err)
-			_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
-			deleteMessageAfter(s, i, 5*time.Second)
-			return
-		}
-
-		// Find the voice channel the user is in
-		var voiceChannelID string
-		for _, vs := range guild.VoiceStates {
-			if vs.UserID == i.Member.User.ID {
-				voiceChannelID = vs.ChannelID
-				break
-			}
-		}
-
-		// User not in a voice channel
-		if voiceChannelID == "" {
-			_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
-			deleteMessageAfter(s, i, 5*time.Second)
-			return
-		}
-
-		// Join voice
-		vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, false)
-		if err != nil {
-			bot.Logger.Warn("failed to join voice", "err", err)
-			_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Failed to join voice channel."))
-			deleteMessageAfter(s, i, 5*time.Second)
-			return
-		}
-
-		// Start streaming
-		done := make(chan struct{})
-		bot.radioMutex.Lock()
-		bot.radioCancel[guild.ID] = done
-		bot.radioMutex.Unlock()
-
-		go func() {
-			defer func() {
-				_ = vc.Disconnect()
-				bot.radioMutex.Lock()
-				delete(bot.radioCancel, guild.ID)
-				bot.radioMutex.Unlock()
-			}()
-			bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-			if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
-				bot.Logger.Error("streaming error", "err", err)
-				return
-			}
-			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
-		}()
-
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
-		deleteMessageAfter(s, i, 5*time.Second)
+		bot.runRadioStream(s, i, station)
 		return
 	}
 
@@ -206,59 +209,5 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 	stationID, _ := strconv.Atoi(values[0])
 	station := bot.radioStations[stationID]
 
-	// Find the voice channel the user is in
-	guild, err := s.State.Guild(i.GuildID)
-	if err != nil {
-		bot.Logger.Warn("failed to get guild", "err", err)
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Could not get guild."))
-		deleteMessageAfter(s, i, 5*time.Second)
-		return
-	}
-
-	var voiceChannelID string
-	for _, vs := range guild.VoiceStates {
-		if vs.UserID == i.Member.User.ID {
-			voiceChannelID = vs.ChannelID
-			break
-		}
-	}
-
-	if voiceChannelID == "" {
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("You must be in a voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
-		return
-	}
-
-	// Join voice
-	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, false)
-	if err != nil {
-		bot.Logger.Warn("failed to join voice", "err", err)
-		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Failed to join voice channel."))
-		deleteMessageAfter(s, i, 5*time.Second)
-		return
-	}
-
-	done := make(chan struct{})
-
-	bot.radioMutex.Lock()
-	bot.radioCancel[guild.ID] = done
-	bot.radioMutex.Unlock()
-
-	go func() {
-		defer func() {
-			_ = vc.Disconnect()
-			bot.radioMutex.Lock()
-			delete(bot.radioCancel, guild.ID)
-			bot.radioMutex.Unlock()
-		}()
-		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
-			bot.Logger.Error("streaming error", "err", err)
-			return
-		}
-		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
-	}()
-
-	_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
-	deleteMessageAfter(s, i, 5*time.Second)
+	bot.runRadioStream(s, i, station)
 }
