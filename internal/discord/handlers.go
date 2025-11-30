@@ -80,9 +80,11 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	bot.radioMutex.Lock()
 	bot.radioSessions[guild.ID] = &StreamSession{
-		Done:    make(chan struct{}),
+		Context: ctx,
+		Cancel:  cancel,
 		UserID:  i.Member.User.ID,
 		Station: &station,
 	}
@@ -92,11 +94,14 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		defer func() {
 			_ = vc.Disconnect()
 			bot.radioMutex.Lock()
-			delete(bot.radioSessions, guild.ID)
+			if session, ok := bot.radioSessions[guild.ID]; !ok {
+				session.Cancel()
+				delete(bot.radioSessions, guild.ID)
+			}
 			bot.radioMutex.Unlock()
 		}()
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, bot.radioSessions[guild.ID].Done); err != nil {
+		if err := bot.streamRadioWithFFmpeg(vc, bot.radioSessions[guild.ID]); err != nil {
 			bot.Logger.Error("streaming error", "err", err)
 			return
 		}
@@ -182,7 +187,7 @@ func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	if vc, ok := s.VoiceConnections[guild.ID]; ok {
 		bot.radioMutex.Lock()
-		close(bot.radioSessions[guild.ID].Done)
+		bot.radioSessions[guild.ID].Cancel()
 		delete(bot.radioSessions, guild.ID)
 		bot.radioMutex.Unlock()
 		_ = vc.Disconnect()

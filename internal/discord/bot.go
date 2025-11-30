@@ -27,7 +27,8 @@ type RadioStation struct {
 }
 
 type StreamSession struct {
-	Done    chan struct{}
+	Context context.Context
+	Cancel  context.CancelFunc
 	UserID  string
 	Station *RadioStation
 }
@@ -104,7 +105,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	}
 
 	b.RegisterCommands()
-	b.Logger.Info("Discord bot started")
+	b.Logger.Debug("Discord bot started")
 	defer b.Session.Close()
 
 	stop := make(chan os.Signal, 1)
@@ -116,8 +117,8 @@ func (b *Bot) Start(ctx context.Context) error {
 		b.Logger.Info("Shutting down Discord bot")
 		b.radioMutex.Lock()
 		for guildID, session := range b.radioSessions {
-			b.Logger.Info("stopping radio stream", "guild_id", guildID)
-			close(session.Done)
+			b.Logger.Debug("stopping radio stream", "guild_id", guildID)
+			session.Cancel()
 		}
 		b.radioMutex.Unlock()
 	}
@@ -198,13 +199,13 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 			b.Logger.Error("failed to register command", "name", name, "guild_id", g.ID, "err", err)
 			continue
 		}
-		b.Logger.Info("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
+		b.Logger.Debug("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
 	}
 }
 
 // onGuildDelete handles guild deletion events.
 func (b *Bot) onGuildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
-	b.Logger.Info("left guild", "name", g.Name, "id", g.ID)
+	b.Logger.Debug("left guild", "name", g.Name, "id", g.ID)
 }
 
 // onInteractionUpdate handles all interaction events and routes them to the appropriate handler.
@@ -227,8 +228,8 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 	if vs.ChannelID == "" { // Bot has disconnected from voice channel
 		guildID := vs.GuildID
 		bot.radioMutex.Lock()
-		if cancel, ok := bot.radioSessions[guildID]; ok {
-			close(cancel.Done) // Signal the stream to stop
+		if session, ok := bot.radioSessions[guildID]; ok {
+			session.Cancel()
 			delete(bot.radioSessions, guildID)
 		}
 		bot.radioMutex.Unlock()
