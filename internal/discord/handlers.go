@@ -36,16 +36,6 @@ func buildInteractionResponseEx(i *discordgo.InteractionResponseData) *discordgo
 
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	minValues := 1
-
-	stationSelect := discordgo.SelectMenu{
-		CustomID:    "radio_station_select",
-		Placeholder: "Select a station",
-		MinValues:   &minValues,
-		MaxValues:   len(bot.radioStations),
-		Options:     []discordgo.SelectMenuOption{}, // start empty
-	}
-
 	// check if already in a voice channel and streaming
 	if _, ok := s.VoiceConnections[i.GuildID]; ok || bot.radioCancel[i.GuildID] != nil {
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Already streaming in a voice channel. Use /stop to stop the current stream first."))
@@ -114,6 +104,15 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 		_ = s.InteractionRespond(i.Interaction, buildInteractionResponse("Starting radio: **"+station.Name+"**"))
 		deleteMessageAfter(s, i, 5*time.Second)
 		return
+	}
+
+	minValues := 1
+	stationSelect := discordgo.SelectMenu{
+		CustomID:    "radio_station_select",
+		Placeholder: "Select a station",
+		MinValues:   &minValues,
+		MaxValues:   len(bot.radioStations),
+		Options:     []discordgo.SelectMenuOption{}, // start empty
 	}
 
 	// Populate options

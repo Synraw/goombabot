@@ -63,7 +63,10 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
-	radioStations, _ := bot.azureApiClient.GetStations(context.Background())
+	radioStations, err := bot.azureApiClient.GetStations(context.Background())
+	if err != nil {
+		return nil, err
+	}
 
 	for _, station := range radioStations {
 		opusMountUrl := station.ListenURL
