@@ -115,11 +115,11 @@ func (b *Bot) Start(ctx context.Context) error {
 	case <-stop:
 		b.Logger.Info("Shutting down Discord bot")
 		b.radioMutex.Lock()
-		defer b.radioMutex.Unlock()
 		for guildID, session := range b.radioSessions {
 			b.Logger.Info("stopping radio stream", "guild_id", guildID)
 			close(session.Done)
 		}
+		b.radioMutex.Unlock()
 	}
 	return nil
 }
@@ -213,15 +213,9 @@ func (b *Bot) onInteractionUpdate(s *discordgo.Session, i *discordgo.Interaction
 	case discordgo.InteractionMessageComponent:
 		b.handleComponent(s, i)
 	case discordgo.InteractionApplicationCommand:
-		data := i.ApplicationCommandData()
-		def, ok := b.commands[data.Name]
-		if !ok || def.Handle == nil {
-			b.Logger.Warn("no handler for command", "name", data.Name)
-			return
-		}
-		def.Handle(b, s, i)
+		b.handleCommands(s, i)
 	default:
-		b.Logger.Warn("unknown interaction type", "type", i.Type)
+		b.Logger.Warn("Unhandled interaction type", "type", i.Type)
 	}
 }
 

@@ -120,8 +120,9 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// if only one station, select it by default
 	if len(bot.radioStations) == 1 {
-		station := bot.radioStations[1]
-		bot.runRadioStream(s, i, station)
+		for _, station := range bot.radioStations {
+			bot.runRadioStream(s, i, station)
+		}
 		return
 	}
 
@@ -142,6 +143,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 		})
 	}
 
+	// send the select menu as a response
 	resp := &discordgo.InteractionResponseData{
 		Content: "Select a radio station:",
 		Components: []discordgo.MessageComponent{
@@ -230,6 +232,7 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 	deleteMessageAfter(s, i, shortDelay)
 }
 
+// handleNowPlaying shows the currently playing song on the radio station.
 func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
@@ -284,6 +287,17 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 	case "radio_station_select":
 		bot.handleRadioSelect(s, i)
 	}
+}
+
+// handleCommands routes interaction command events to the appropriate handler.
+func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	def, ok := bot.commands[data.Name]
+	if !ok || def.Handle == nil {
+		bot.Logger.Warn("no handler for command", "name", data.Name)
+		return
+	}
+	def.Handle(bot, s, i)
 }
 
 // handleRadioSelect processes the station selection and starts streaming.
