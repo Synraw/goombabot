@@ -5,5 +5,3 @@ services:
     network_mode: host
     env_file:
       - .env
-    ports:
-      - "${METRICS_PORT}:${METRICS_PORT}"

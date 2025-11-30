@@ -96,7 +96,8 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 			}()
 			bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 			if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
-				bot.Logger.Warn("streaming error", "err", err)
+				bot.Logger.Error("streaming error", "err", err)
+				return
 			}
 			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 		}()
@@ -252,7 +253,8 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 		}()
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 		if err := bot.streamRadioWithFFmpeg(vc, station.StreamURL, done); err != nil {
-			bot.Logger.Warn("streaming error", "err", err)
+			bot.Logger.Error("streaming error", "err", err)
+			return
 		}
 		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
