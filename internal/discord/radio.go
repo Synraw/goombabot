@@ -163,9 +163,11 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 				dropCount := bufferLevel - maxBufferSize
 				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount)
 				ringBuffer = ringBuffer[dropCount:]
-			} else if bufferLevel < minBufferSize && consecutiveEmptyCount == 0 {
-				// Buffer running low - log for monitoring
-				bot.Logger.Debug("buffer level low", "size", bufferLevel, "target", initialBufferSize)
+			} else if bufferLevel < minBufferSize {
+				// Buffer critically low - only log once per incident
+				if consecutiveEmptyCount == 0 {
+					bot.Logger.Warn("buffer critically low", "size", bufferLevel, "min", minBufferSize)
+				}
 			}
 			consecutiveEmptyCount = 0
 		case <-ticker.C:
