@@ -53,10 +53,10 @@ type NowPlaying struct {
 		Current int `json:"current"`
 	} `json:"listeners"`
 	Live struct {
-		IsLive         bool   `json:"is_live"`
-		StreamerName   string `json:"streamer_name"`
-		BroadcastStart int    `json:"broadcast_start"`
-		Art            string `json:"art"`
+		IsLive         bool    `json:"is_live"`
+		StreamerName   string  `json:"streamer_name"`
+		BroadcastStart float32 `json:"broadcast_start"`
+		Art            string  `json:"art"`
 	} `json:"live"`
 	NowPlaying struct {
 		ShID      int    `json:"sh_id"`

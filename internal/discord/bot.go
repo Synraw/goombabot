@@ -75,8 +75,10 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
+	// Load radio stations into bot
 	for _, station := range radioStations {
 		opusMountUrl := station.ListenURL
+		// Find the opus mount if available
 		for _, mount := range station.Mounts {
 			if mount.Format == "opus" {
 				opusMountUrl = mount.URL
