@@ -2,13 +2,21 @@ package discord
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"os/exec"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+)
+
+const (
+	packetBufferSize  = 200
+	initialBufferSize = 50
+	maxBufferSize     = 100
+	tickInterval      = 15 * time.Millisecond
+	opusSendTimeout   = 100 * time.Millisecond
 )
 
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
@@ -22,7 +30,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(ffmpegPath,
+	cmd := exec.CommandContext(session.Context, ffmpegPath,
 		"-re",
 		"-i", session.Station.StreamURL,
 		"-vn",
@@ -45,18 +53,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	}
 	defer func() {
 		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-			done := make(chan struct{})
-			go func() {
-				_ = cmd.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-				// ffmpeg exited gracefully
-			case <-time.After(500 * time.Millisecond):
-				_ = cmd.Process.Kill()
-			}
+			_ = cmd.Wait()
 		}
 	}()
 
@@ -64,7 +61,9 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	defer vc.Speaking(false)
 
 	reader := bufio.NewReader(stdout)
-	packets := make(chan []byte, 200)
+	packets := make(chan []byte, packetBufferSize)
+
+	errChan := make(chan error, 1)
 
 	go func() {
 		defer close(packets)
@@ -79,6 +78,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			if _, err := io.ReadFull(reader, header); err != nil {
 				if err != io.EOF {
 					bot.Logger.Error("ffmpeg/ogg read header error", "err", err)
+					errChan <- err
 				}
 				return
 			}
@@ -136,20 +136,61 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		}
 	}()
 
-	for {
+	// Use a ring buffer or slice for continuous buffering
+	ringBuffer := make([][]byte, 0, maxBufferSize)
+
+	// Fill initial buffer
+	for len(ringBuffer) < initialBufferSize {
 		select {
 		case <-session.Context.Done():
 			return nil
 		case pkt, ok := <-packets:
 			if !ok {
+				return errors.New("ffmpeg exited before buffer filled")
+			}
+			ringBuffer = append(ringBuffer, pkt)
+		}
+	}
+
+	bot.Logger.Info("buffer filled, starting playback")
+
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-session.Context.Done():
+			return nil
+		case err := <-errChan:
+			return err
+		case pkt, ok := <-packets:
+			if !ok {
+				// Stream ended, drain remaining buffer
+				for len(ringBuffer) > 0 {
+					select {
+					case vc.OpusSend <- ringBuffer[0]:
+						ringBuffer = ringBuffer[1:]
+						time.Sleep(tickInterval)
+					case <-session.Context.Done():
+						return nil
+					}
+				}
 				return nil
 			}
-			time.Sleep(15 * time.Millisecond)
-			select {
-			case vc.OpusSend <- pkt:
-			case <-time.After(100 * time.Millisecond):
-			case <-session.Context.Done():
-				return nil
+			ringBuffer = append(ringBuffer, pkt)
+			if len(ringBuffer) > maxBufferSize {
+				ringBuffer = ringBuffer[1:] // Remove oldest
+			}
+		case <-ticker.C:
+			if len(ringBuffer) > 0 {
+				select {
+				case vc.OpusSend <- ringBuffer[0]:
+					ringBuffer = ringBuffer[1:]
+				case <-time.After(opusSendTimeout):
+					bot.Logger.Warn("opus send timeout")
+				case <-session.Context.Done():
+					return nil
+				}
 			}
 		}
 	}
