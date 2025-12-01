@@ -187,7 +187,7 @@ func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	if vc, ok := s.VoiceConnections[guild.ID]; ok {
 		bot.radioMutex.Lock()
-		if session, ok := bot.radioSessions[guild.ID]; ok {
+		if session, ok := bot.radioSessions[guild.ID]; ok && session != nil {
 			session.Cancel()
 			delete(bot.radioSessions, guild.ID)
 		}

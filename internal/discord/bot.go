@@ -232,7 +232,7 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 	if vs.ChannelID == "" { // Bot has disconnected from voice channel
 		guildID := vs.GuildID
 		bot.radioMutex.Lock()
-		if session, ok := bot.radioSessions[guildID]; ok {
+		if session, ok := bot.radioSessions[guildID]; ok && session != nil {
 			session.Cancel()
 			delete(bot.radioSessions, guildID)
 		}
