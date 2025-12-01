@@ -191,6 +191,9 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	consecutiveEmptyCount := 0
 	maxConsecutiveEmpty := 50 // 1 second of empty ticks
 
+	// Track timing to maintain consistent 20ms intervals
+	nextSend := time.Now()
+
 	for {
 		select {
 		case <-session.Context.Done():
@@ -205,10 +208,17 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			}
 			ringBuffer = append(ringBuffer, pkt)
 			if len(ringBuffer) > maxBufferSize {
+				bot.Logger.Warn("ring buffer overflow, dropping oldest packet", "bufferSize", len(ringBuffer))
 				ringBuffer = ringBuffer[1:] // Remove oldest
 			}
 			consecutiveEmptyCount = 0
 		case <-ticker.C:
+			// Only send if it's time (compensate for processing delays)
+			now := time.Now()
+			if now.Before(nextSend) {
+				continue
+			}
+
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
 				if len(packet) > 0 {
@@ -216,9 +226,16 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 					case vc.OpusSend <- packet:
 						ringBuffer = ringBuffer[1:]
 						consecutiveEmptyCount = 0
+						// Schedule next send exactly 20ms from intended send time
+						nextSend = nextSend.Add(tickInterval)
+						// If we've fallen behind, reset to now
+						if nextSend.Before(now) {
+							nextSend = now.Add(tickInterval)
+						}
 					case <-time.After(opusSendTimeout):
 						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
 						ringBuffer = ringBuffer[1:]
+						nextSend = now.Add(tickInterval)
 					case <-session.Context.Done():
 						return nil
 					}
