@@ -3,6 +3,7 @@ package discord
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -183,7 +184,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	defer ticker.Stop()
 
 	consecutiveEmptyCount := 0
-	maxConsecutiveEmpty := 50 // Increased from 5 to allow for ~1 second of buffering issues
+	maxConsecutiveEmpty := 50 // 1 second of empty ticks
 
 	for {
 		select {
@@ -244,13 +245,13 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 // streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
 func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
 	client := &http.Client{
-		Timeout: 30 * time.Second, // Add 30s timeout for initial connection
+		Timeout: 0, // No timeout for streaming connections
 		Transport: &http.Transport{
 			ReadBufferSize:        256 * 1024,
 			WriteBufferSize:       256 * 1024,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second, // Only initial response timeout
 		},
 	}
 
@@ -264,6 +265,10 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
+	}
 
 	// Check content type to ensure it's Ogg/Opus
 	contentType := resp.Header.Get("Content-Type")
