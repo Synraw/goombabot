@@ -19,7 +19,7 @@ const (
 	initialBufferSize  = 150 // Increase from 100 -> 3 seconds (more headroom)
 	maxBufferSize      = 400 // Increase from 300 -> 8 seconds maximum
 	tickInterval       = 20 * time.Millisecond
-	opusSendTimeout    = 100 * time.Millisecond
+	opusSendTimeout    = 500 * time.Millisecond
 	maxInvalidOggPages = 10
 )
 
