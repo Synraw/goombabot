@@ -13,8 +13,8 @@ import (
 
 const (
 	packetBufferSize  = 400
-	initialBufferSize = 50
-	maxBufferSize     = 100
+	initialBufferSize = 100
+	maxBufferSize     = 300
 	tickInterval      = 15 * time.Millisecond
 	opusSendTimeout   = 100 * time.Millisecond
 )
@@ -154,6 +154,8 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
+	minBufferThreshold := initialBufferSize / 2 // Maintain minimum buffer
+
 	for {
 		select {
 		case <-session.Context.Done():
@@ -179,15 +181,18 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 				ringBuffer = ringBuffer[1:] // Remove oldest
 			}
 		case <-ticker.C:
-			if len(ringBuffer) > 0 {
+			// Only send if we have enough buffer to maintain continuous playback
+			if len(ringBuffer) > minBufferThreshold {
 				select {
 				case vc.OpusSend <- ringBuffer[0]:
 					ringBuffer = ringBuffer[1:]
 				case <-time.After(opusSendTimeout):
-					bot.Logger.Warn("opus send timeout")
+					bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
 				case <-session.Context.Done():
 					return nil
 				}
+			} else if len(ringBuffer) == 0 {
+				bot.Logger.Warn("buffer empty, waiting for packets", "packetsChannelLen", len(packets))
 			}
 		}
 	}
