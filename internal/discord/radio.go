@@ -36,6 +36,9 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		"-reconnect", "1",
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
+		"-fflags", "+genpts+igndts", // Generate PTS and ignore DTS discontinuities
+		"-avoid_negative_ts", "make_zero", // Handle negative timestamps
+		"-max_delay", "5000000", // 5 seconds max delay
 		"-vn",
 		"-ac", "2",
 		"-ar", "48000",
