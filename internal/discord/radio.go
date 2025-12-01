@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	packetBufferSize  = 800 // Increased
-	initialBufferSize = 150 // Increased (3 seconds)
-	maxBufferSize     = 400 // Increased (8 seconds)
-	tickInterval      = 20 * time.Millisecond
-	opusSendTimeout   = 100 * time.Millisecond
+	packetBufferSize  = 800                    // packet buffer size for streaming
+	initialBufferSize = 150                    // initial buffer size (3 seconds)
+	maxBufferSize     = 400                    // max buffer size (8 seconds)
+	tickInterval      = 20 * time.Millisecond  // 20ms per Opus frame
+	opusSendTimeout   = 100 * time.Millisecond // timeout for sending to Discord
 )
 
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
@@ -183,7 +183,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	defer ticker.Stop()
 
 	consecutiveEmptyCount := 0
-	maxConsecutiveEmpty := 5
+	maxConsecutiveEmpty := 50 // Increased from 5 to allow for ~1 second of buffering issues
 
 	for {
 		select {
@@ -193,27 +193,18 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			return err
 		case pkt, ok := <-packets:
 			if !ok {
-				// Stream ended, drain remaining buffer
-				for len(ringBuffer) > 0 {
-					select {
-					case vc.OpusSend <- ringBuffer[0]:
-						ringBuffer = ringBuffer[1:]
-						time.Sleep(tickInterval)
-					case <-session.Context.Done():
-						return nil
-					}
-				}
-				return nil
+				// Stream ended unexpectedly - this triggers reconnection
+				bot.Logger.Warn("packet channel closed unexpectedly")
+				return errors.New("stream ended unexpectedly")
 			}
 			ringBuffer = append(ringBuffer, pkt)
 			if len(ringBuffer) > maxBufferSize {
 				ringBuffer = ringBuffer[1:] // Remove oldest
 			}
-			consecutiveEmptyCount = 0 // Reset on packet arrival
+			consecutiveEmptyCount = 0
 		case <-ticker.C:
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
-				// Double-check packet validity before sending
 				if len(packet) > 0 {
 					select {
 					case vc.OpusSend <- packet:
@@ -221,7 +212,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 						consecutiveEmptyCount = 0
 					case <-time.After(opusSendTimeout):
 						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
-						ringBuffer = ringBuffer[1:] // Skip problematic packet
+						ringBuffer = ringBuffer[1:]
 					case <-session.Context.Done():
 						return nil
 					}
@@ -232,10 +223,18 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			} else {
 				consecutiveEmptyCount++
 				if consecutiveEmptyCount >= maxConsecutiveEmpty {
-					bot.Logger.Warn("buffer empty for too long",
+					// Buffer starvation for too long - force reconnection
+					bot.Logger.Error("buffer starved, stream appears dead",
 						"count", consecutiveEmptyCount,
 						"packetsChannelLen", len(packets))
-					consecutiveEmptyCount = 0 // Reset to avoid spam
+					return errors.New("buffer starvation detected")
+				}
+				if consecutiveEmptyCount%10 == 0 && consecutiveEmptyCount > 0 {
+					// Log every 200ms during starvation
+					bot.Logger.Warn("buffer empty",
+						"count", consecutiveEmptyCount,
+						"packetsChannelLen", len(packets),
+						"ringBufferLen", len(ringBuffer))
 				}
 			}
 		}
@@ -245,10 +244,13 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 // streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
 func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
 	client := &http.Client{
-		Timeout: 0, // No timeout for streaming
+		Timeout: 30 * time.Second, // Add 30s timeout for initial connection
 		Transport: &http.Transport{
-			ReadBufferSize:  256 * 1024, // Increase read buffer to 256KB
-			WriteBufferSize: 256 * 1024,
+			ReadBufferSize:        256 * 1024,
+			WriteBufferSize:       256 * 1024,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
 
