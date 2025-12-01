@@ -16,9 +16,9 @@ import (
 
 const (
 	packetBufferSize   = 2000
-	initialBufferSize  = 100 // ~2 seconds (faster start)
-	minBufferSize      = 50  // ~1 second minimum
-	maxBufferSize      = 300 // ~6 seconds maximum
+	initialBufferSize  = 150 // Increase from 100 -> 3 seconds (more headroom)
+	minBufferSize      = 75  // Increase from 50 -> 1.5 seconds minimum
+	maxBufferSize      = 400 // Increase from 300 -> 8 seconds maximum
 	tickInterval       = 20 * time.Millisecond
 	opusSendTimeout    = 100 * time.Millisecond
 	maxInvalidOggPages = 10
@@ -179,6 +179,12 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			}
 			consecutiveEmptyCount = 0
 		case <-ticker.C:
+			// If buffer is critically low, skip this tick to let it refill
+			if len(ringBuffer) < 10 && consecutiveEmptyCount == 0 {
+				bot.Logger.Debug("buffer very low, pausing send to refill", "size", len(ringBuffer))
+				continue
+			}
+
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
 				ringBuffer = ringBuffer[1:] // Always remove, even if empty
