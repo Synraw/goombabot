@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	packetBufferSize  = 200
+	packetBufferSize  = 400
 	initialBufferSize = 50
 	maxBufferSize     = 100
 	tickInterval      = 15 * time.Millisecond
@@ -62,7 +62,6 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 
 	reader := bufio.NewReader(stdout)
 	packets := make(chan []byte, packetBufferSize)
-
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -151,8 +150,6 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			ringBuffer = append(ringBuffer, pkt)
 		}
 	}
-
-	bot.Logger.Info("buffer filled, starting playback")
 
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
