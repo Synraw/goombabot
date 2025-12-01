@@ -141,9 +141,7 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 	defer ticker.Stop()
 
 	consecutiveEmptyCount := 0
-	maxConsecutiveEmpty := 50     // 1 second of empty ticks
-	consecutiveLowCount := 0      // Track how long buffer stays low
-	const maxConsecutiveLow = 100 // 2 seconds of sustained low buffer
+	maxConsecutiveEmpty := 50 // 1 second of empty ticks
 
 	for {
 		select {
@@ -165,23 +163,11 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 				dropCount := bufferLevel - maxBufferSize
 				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount)
 				ringBuffer = ringBuffer[dropCount:]
-			} else if bufferLevel < minBufferSize {
-				consecutiveLowCount++
-				if consecutiveLowCount == maxConsecutiveLow {
-					// Only log if sustained low for 2 seconds
-					bot.Logger.Warn("buffer sustained low", "size", bufferLevel, "min", minBufferSize, "duration", "2s")
-				}
-			} else {
-				if consecutiveLowCount >= maxConsecutiveLow {
-					bot.Logger.Info("buffer recovered", "size", bufferLevel)
-				}
-				consecutiveLowCount = 0
 			}
 			consecutiveEmptyCount = 0
 		case <-ticker.C:
 			// If buffer is critically low, skip this tick to let it refill
 			if len(ringBuffer) < 10 && consecutiveEmptyCount == 0 {
-				bot.Logger.Debug("buffer very low, pausing send to refill", "size", len(ringBuffer))
 				continue
 			}
 
