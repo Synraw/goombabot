@@ -242,13 +242,17 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	}
 }
 
-// streamRadioDirectOpus streams audio directly as Opus to Discord, without transcoding.
+// streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
 func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
 	resp, err := http.Get(session.Station.StreamURL)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Check content type to ensure it's Ogg/Opus
+	contentType := resp.Header.Get("Content-Type")
+	bot.Logger.Info("streaming direct opus", "contentType", contentType)
 
 	vc.Speaking(true)
 	defer vc.Speaking(false)
@@ -259,6 +263,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 
 	go func() {
 		defer close(packets)
+		var pending []byte
 		invalidPacketCount := 0
 		const maxInvalidPackets = 10
 
@@ -271,43 +276,74 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 			header := make([]byte, 27)
 			if _, err := io.ReadFull(reader, header); err != nil {
 				if err != io.EOF {
-					bot.Logger.Error("http/opus read header error", "err", err)
+					bot.Logger.Error("http/ogg read header error", "err", err)
 					errChan <- err
 				}
 				return
 			}
-			// Opus packets don't have a magic header like Ogg, but we can still validate basic properties
-			// For instance, the packet size should not exceed the maximum Opus frame size
-			packetSize := int(header[0])<<8 | int(header[1])
-			if packetSize < 1 || packetSize > 1275 {
+			if string(header[0:4]) != "OggS" {
 				invalidPacketCount++
 				if invalidPacketCount > maxInvalidPackets {
-					bot.Logger.Error("too many invalid Opus packets, aborting")
+					bot.Logger.Error("too many invalid Ogg pages, aborting")
 					return
 				}
-				bot.Logger.Warn("invalid Opus packet size, skipping")
+				bot.Logger.Warn("invalid Ogg page, skipping")
 				continue
 			}
-			invalidPacketCount = 0 // Reset on valid packet size
+			invalidPacketCount = 0 // Reset on valid header
 
-			packet := make([]byte, packetSize)
-			if _, err := io.ReadFull(reader, packet); err != nil {
-				bot.Logger.Error("http/opus read packet error", "err", err)
+			segCount := int(header[26])
+			lacingVals := make([]byte, segCount)
+			if _, err := io.ReadFull(reader, lacingVals); err != nil {
+				bot.Logger.Error("http/ogg read lacing error", "err", err)
 				return
 			}
-			// Prepend the packet size as two bytes (big-endian) for Discord
-			discordPacket := make([]byte, packetSize+2)
-			discordPacket[0] = byte(packetSize >> 8)
-			discordPacket[1] = byte(packetSize & 0xFF)
-			copy(discordPacket[2:], packet)
-
-			select {
-			case packets <- discordPacket:
-			case <-session.Context.Done():
+			pageSize := 0
+			for _, v := range lacingVals {
+				pageSize += int(v)
+			}
+			pageData := make([]byte, pageSize)
+			if _, err := io.ReadFull(reader, pageData); err != nil {
+				bot.Logger.Error("http/ogg read page data error", "err", err)
 				return
-			default:
-				<-packets
-				packets <- discordPacket
+			}
+			offset := 0
+			for _, lv := range lacingVals {
+				size := int(lv)
+				if size == 0 {
+					continue
+				}
+				if offset+size > len(pageData) {
+					bot.Logger.Warn("segment overflow, skipping rest of page")
+					break
+				}
+				seg := pageData[offset : offset+size]
+				offset += size
+				pending = append(pending, seg...)
+				if size < 255 {
+					packet := pending
+					pending = nil
+					if len(packet) >= 8 {
+						if string(packet[:8]) == "OpusHead" || string(packet[:8]) == "OpusTags" {
+							continue
+						}
+					}
+					// Validate Opus packet - minimum size is 1 byte
+					if len(packet) == 0 || len(packet) > 1275 {
+						bot.Logger.Warn("invalid opus packet size", "size", len(packet))
+						continue
+					}
+					frame := make([]byte, len(packet))
+					copy(frame, packet)
+					select {
+					case packets <- frame:
+					case <-session.Context.Done():
+						return
+					default:
+						<-packets
+						packets <- frame
+					}
+				}
 			}
 		}
 	}()
@@ -358,11 +394,10 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 			if len(ringBuffer) > maxBufferSize {
 				ringBuffer = ringBuffer[1:] // Remove oldest
 			}
-			consecutiveEmptyCount = 0 // Reset on packet arrival
+			consecutiveEmptyCount = 0
 		case <-ticker.C:
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
-				// Double-check packet validity before sending
 				if len(packet) > 0 && len(packet) <= 1275 {
 					select {
 					case vc.OpusSend <- packet:
@@ -370,7 +405,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 						consecutiveEmptyCount = 0
 					case <-time.After(opusSendTimeout):
 						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
-						ringBuffer = ringBuffer[1:] // Skip problematic packet
+						ringBuffer = ringBuffer[1:]
 					case <-session.Context.Done():
 						return nil
 					}
@@ -384,7 +419,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 					bot.Logger.Warn("buffer empty for too long",
 						"count", consecutiveEmptyCount,
 						"packetsChannelLen", len(packets))
-					consecutiveEmptyCount = 0 // Reset to avoid spam
+					consecutiveEmptyCount = 0
 				}
 			}
 		}
