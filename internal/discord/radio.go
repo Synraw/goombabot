@@ -43,12 +43,12 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		"-ac", "2", // 2 audio channels
 		"-ar", "48000", // 48kHz sample rate
 		"-c:a", "libopus", // Encode to Opus
-		"-b:a", "128k", // Increased to 128kbps for better quality
+		"-b:a", "128k", // 128kbps bitrate
 		"-frame_duration", "20", // 20ms frames
 		"-application", "audio", // Audio application
 		"-vbr", "off", // Disable VBR for consistent quality
 		"-compression_level", "10", // Maximum quality (0-10)
-		"-bufsize", "256k", // Increased buffer size
+		"-bufsize", "256k", // Buffer size
 		"-max_muxing_queue_size", "1024", // Increase muxing queue size
 		"-f", "ogg", // Output format Ogg
 		"pipe:1", // Output to stdout
