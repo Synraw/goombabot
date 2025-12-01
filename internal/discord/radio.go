@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	packetBufferSize  = 800                    // packet buffer size for streaming
-	initialBufferSize = 150                    // initial buffer size (3 seconds)
-	maxBufferSize     = 400                    // max buffer size (8 seconds)
+	packetBufferSize  = 2000                   // Increased from 800
+	initialBufferSize = 300                    // Increased from 150 (6 seconds)
+	maxBufferSize     = 800                    // Increased from 400 (16 seconds)
 	tickInterval      = 20 * time.Millisecond  // 20ms per Opus frame
 	opusSendTimeout   = 100 * time.Millisecond // timeout for sending to Discord
 )
@@ -155,9 +155,14 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 					case packets <- frame:
 					case <-session.Context.Done():
 						return
-					default:
-						<-packets
-						packets <- frame
+					case <-time.After(100 * time.Millisecond):
+						// If channel is full for 100ms, log it but keep trying
+						bot.Logger.Warn("packet channel congestion", "channelLen", len(packets))
+						select {
+						case packets <- frame:
+						case <-session.Context.Done():
+							return
+						}
 					}
 				}
 			}
@@ -359,9 +364,14 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 					case packets <- frame:
 					case <-session.Context.Done():
 						return
-					default:
-						<-packets
-						packets <- frame
+					case <-time.After(100 * time.Millisecond):
+						// If channel is full for 100ms, log it but keep trying
+						bot.Logger.Warn("packet channel congestion", "channelLen", len(packets))
+						select {
+						case packets <- frame:
+						case <-session.Context.Done():
+							return
+						}
 					}
 				}
 			}
