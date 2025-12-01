@@ -31,28 +31,28 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		return err
 	}
 	cmd := exec.CommandContext(session.Context, ffmpegPath,
-		"-re",
-		"-i", session.Station.StreamURL,
-		"-reconnect", "1",
-		"-reconnect_streamed", "1",
-		"-reconnect_delay_max", "5",
+		"-re",                           // Read input at native frame rate
+		"-i", session.Station.StreamURL, // Input URL
+		"-reconnect", "1", // Enable reconnection
+		"-reconnect_streamed", "1", // Reconnect for streamed files
+		"-reconnect_delay_max", "5", // Max delay of 5 seconds
 		"-fflags", "+genpts+igndts", // Generate PTS and ignore DTS discontinuities
 		"-avoid_negative_ts", "make_zero", // Handle negative timestamps
 		"-max_delay", "5000000", // 5 seconds max delay
-		"-vn",
-		"-ac", "2",
-		"-ar", "48000",
-		"-c:a", "libopus",
-		"-b:a", "96k",
-		"-frame_duration", "20",
-		"-application", "audio",
-		"-compression_level", "10",
-		"-packet_loss", "15",
-		"-vbr", "on",
-		"-bufsize", "192k",
-		"-max_muxing_queue_size", "1024",
-		"-f", "ogg",
-		"pipe:1",
+		"-vn",      // No video
+		"-ac", "2", // 2 audio channels
+		"-ar", "48000", // 48kHz sample rate
+		"-c:a", "libopus", // Encode to Opus
+		"-b:a", "96k", // 96kbps bitrate
+		"-frame_duration", "20", // 20ms frames
+		"-application", "audio", // Audio application
+		"-compression_level", "10", // Max compression
+		"-packet_loss", "15", // Simulate 15% packet loss
+		"-vbr", "on", // Enable VBR
+		"-bufsize", "192k", // Buffer size
+		"-max_muxing_queue_size", "1024", // Increase muxing queue size
+		"-f", "ogg", // Output format Ogg
+		"pipe:1", // Output to stdout
 	)
 
 	stdout, err := cmd.StdoutPipe()
@@ -93,6 +93,9 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	go func() {
 		defer close(packets)
 		var pending []byte
+		invalidPacketCount := 0
+		const maxInvalidPackets = 10
+
 		for {
 			select {
 			case <-session.Context.Done():
@@ -108,9 +111,16 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 				return
 			}
 			if string(header[0:4]) != "OggS" {
-				bot.Logger.Error("not an Ogg page, aborting")
-				return
+				invalidPacketCount++
+				if invalidPacketCount > maxInvalidPackets {
+					bot.Logger.Error("too many invalid Ogg pages, aborting")
+					return
+				}
+				bot.Logger.Warn("invalid Ogg page, skipping")
+				continue
 			}
+			invalidPacketCount = 0 // Reset on valid header
+
 			segCount := int(header[26])
 			lacingVals := make([]byte, segCount)
 			if _, err := io.ReadFull(reader, lacingVals); err != nil {
@@ -133,7 +143,8 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 					continue
 				}
 				if offset+size > len(pageData) {
-					return
+					bot.Logger.Warn("segment overflow, skipping rest of page")
+					break
 				}
 				seg := pageData[offset : offset+size]
 				offset += size
@@ -145,6 +156,11 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 						if string(packet[:8]) == "OpusHead" || string(packet[:8]) == "OpusTags" {
 							continue
 						}
+					}
+					// Validate Opus packet - minimum size is 1 byte
+					if len(packet) == 0 || len(packet) > 1275 {
+						bot.Logger.Warn("invalid opus packet size", "size", len(packet))
+						continue
 					}
 					frame := make([]byte, len(packet))
 					copy(frame, packet)
@@ -210,14 +226,22 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			consecutiveEmptyCount = 0 // Reset on packet arrival
 		case <-ticker.C:
 			if len(ringBuffer) > 0 {
-				select {
-				case vc.OpusSend <- ringBuffer[0]:
+				packet := ringBuffer[0]
+				// Double-check packet validity before sending
+				if len(packet) > 0 && len(packet) <= 1275 {
+					select {
+					case vc.OpusSend <- packet:
+						ringBuffer = ringBuffer[1:]
+						consecutiveEmptyCount = 0
+					case <-time.After(opusSendTimeout):
+						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
+						ringBuffer = ringBuffer[1:] // Skip problematic packet
+					case <-session.Context.Done():
+						return nil
+					}
+				} else {
+					bot.Logger.Warn("dropping invalid packet", "size", len(packet))
 					ringBuffer = ringBuffer[1:]
-					consecutiveEmptyCount = 0
-				case <-time.After(opusSendTimeout):
-					bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
-				case <-session.Context.Done():
-					return nil
 				}
 			} else {
 				consecutiveEmptyCount++
