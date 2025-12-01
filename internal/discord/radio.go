@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	packetBufferSize  = 400
-	initialBufferSize = 100
-	maxBufferSize     = 300
-	tickInterval      = 15 * time.Millisecond
+	packetBufferSize  = 800
+	initialBufferSize = 150
+	maxBufferSize     = 400
+	tickInterval      = 20 * time.Millisecond
 	opusSendTimeout   = 100 * time.Millisecond
 )
 
@@ -177,7 +177,8 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	minBufferThreshold := initialBufferSize / 2 // Maintain minimum buffer
+	consecutiveEmptyCount := 0
+	maxConsecutiveEmpty := 5
 
 	for {
 		select {
@@ -203,19 +204,26 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			if len(ringBuffer) > maxBufferSize {
 				ringBuffer = ringBuffer[1:] // Remove oldest
 			}
+			consecutiveEmptyCount = 0 // Reset on packet arrival
 		case <-ticker.C:
-			// Only send if we have enough buffer to maintain continuous playback
-			if len(ringBuffer) > minBufferThreshold {
+			if len(ringBuffer) > 0 {
 				select {
 				case vc.OpusSend <- ringBuffer[0]:
 					ringBuffer = ringBuffer[1:]
+					consecutiveEmptyCount = 0
 				case <-time.After(opusSendTimeout):
 					bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
 				case <-session.Context.Done():
 					return nil
 				}
-			} else if len(ringBuffer) == 0 {
-				bot.Logger.Warn("buffer empty, waiting for packets", "packetsChannelLen", len(packets))
+			} else {
+				consecutiveEmptyCount++
+				if consecutiveEmptyCount >= maxConsecutiveEmpty {
+					bot.Logger.Warn("buffer empty for too long",
+						"count", consecutiveEmptyCount,
+						"packetsChannelLen", len(packets))
+					consecutiveEmptyCount = 0 // Reset to avoid spam
+				}
 			}
 		}
 	}
