@@ -15,11 +15,13 @@ import (
 )
 
 const (
-	packetBufferSize  = 2000                   // Increased from 800
-	initialBufferSize = 300                    // Increased from 150 (6 seconds)
-	maxBufferSize     = 800                    // Increased from 400 (16 seconds)
-	tickInterval      = 20 * time.Millisecond  // 20ms per Opus frame
-	opusSendTimeout   = 100 * time.Millisecond // timeout for sending to Discord
+	packetBufferSize   = 2000
+	initialBufferSize  = 100 // ~2 seconds (faster start)
+	minBufferSize      = 50  // ~1 second minimum
+	maxBufferSize      = 300 // ~6 seconds maximum
+	tickInterval       = 20 * time.Millisecond
+	opusSendTimeout    = 100 * time.Millisecond
+	maxInvalidOggPages = 10
 )
 
 // parseOggOpusStream reads Ogg pages from a reader and sends Opus packets to a channel.
@@ -27,7 +29,6 @@ func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, pa
 	defer close(packets)
 	var pending []byte
 	invalidPacketCount := 0
-	const maxInvalidPackets = 10
 
 	for {
 		select {
@@ -37,15 +38,18 @@ func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, pa
 		}
 		header := make([]byte, 27)
 		if _, err := io.ReadFull(reader, header); err != nil {
-			if err != io.EOF {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				bot.Logger.Error("ogg read header error", "err", err)
-				errChan <- err
+				select {
+				case errChan <- fmt.Errorf("ogg header read failed: %w", err):
+				default:
+				}
 			}
 			return
 		}
 		if string(header[0:4]) != "OggS" {
 			invalidPacketCount++
-			if invalidPacketCount > maxInvalidPackets {
+			if invalidPacketCount > maxInvalidOggPages {
 				bot.Logger.Error("too many invalid Ogg pages, aborting")
 				return
 			}
@@ -139,9 +143,6 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 	consecutiveEmptyCount := 0
 	maxConsecutiveEmpty := 50 // 1 second of empty ticks
 
-	// Track timing to maintain consistent 20ms intervals
-	nextSend := time.Now()
-
 	for {
 		select {
 		case <-session.Context.Done():
@@ -150,46 +151,37 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			return err
 		case pkt, ok := <-packets:
 			if !ok {
-				// Stream ended unexpectedly - this triggers reconnection
 				bot.Logger.Warn("packet channel closed unexpectedly")
 				return errors.New("stream ended unexpectedly")
 			}
 			ringBuffer = append(ringBuffer, pkt)
-			if len(ringBuffer) > maxBufferSize {
-				bot.Logger.Warn("ring buffer overflow, dropping oldest packet", "bufferSize", len(ringBuffer))
-				ringBuffer = ringBuffer[1:] // Remove oldest
+
+			// Dynamic buffer management
+			bufferLevel := len(ringBuffer)
+			if bufferLevel > maxBufferSize {
+				// Drop oldest packets if overflowing
+				dropCount := bufferLevel - maxBufferSize
+				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount)
+				ringBuffer = ringBuffer[dropCount:]
+			} else if bufferLevel < minBufferSize && consecutiveEmptyCount == 0 {
+				// Buffer running low - log for monitoring
+				bot.Logger.Debug("buffer level low", "size", bufferLevel, "target", initialBufferSize)
 			}
 			consecutiveEmptyCount = 0
 		case <-ticker.C:
-			// Only send if it's time (compensate for processing delays)
-			now := time.Now()
-			if now.Before(nextSend) {
-				continue
-			}
-
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
+				ringBuffer = ringBuffer[1:] // Always remove, even if empty
+
 				if len(packet) > 0 {
 					select {
 					case vc.OpusSend <- packet:
-						ringBuffer = ringBuffer[1:]
 						consecutiveEmptyCount = 0
-						// Schedule next send exactly 20ms from intended send time
-						nextSend = nextSend.Add(tickInterval)
-						// If we've fallen behind, reset to now
-						if nextSend.Before(now) {
-							nextSend = now.Add(tickInterval)
-						}
 					case <-time.After(opusSendTimeout):
 						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
-						ringBuffer = ringBuffer[1:]
-						nextSend = now.Add(tickInterval)
 					case <-session.Context.Done():
 						return nil
 					}
-				} else {
-					bot.Logger.Warn("dropping empty packet")
-					ringBuffer = ringBuffer[1:]
 				}
 			} else {
 				consecutiveEmptyCount++
