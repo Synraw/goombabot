@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	packetBufferSize  = 400
-	initialBufferSize = 50
-	maxBufferSize     = 200
+	packetBufferSize  = 800 // Increased
+	initialBufferSize = 150 // Increased (3 seconds)
+	maxBufferSize     = 400 // Increased (8 seconds)
 	tickInterval      = 20 * time.Millisecond
 	opusSendTimeout   = 100 * time.Millisecond
 )
@@ -143,9 +143,9 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 							continue
 						}
 					}
-					// Validate Opus packet - minimum size is 1 byte
-					if len(packet) == 0 || len(packet) > 1275 {
-						bot.Logger.Warn("invalid opus packet size", "size", len(packet))
+					// Validate Opus packet - minimum size is 1 byte, no strict maximum
+					if len(packet) == 0 {
+						bot.Logger.Warn("empty opus packet, skipping")
 						continue
 					}
 					frame := make([]byte, len(packet))
@@ -214,7 +214,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
 				// Double-check packet validity before sending
-				if len(packet) > 0 && len(packet) <= 1275 {
+				if len(packet) > 0 {
 					select {
 					case vc.OpusSend <- packet:
 						ringBuffer = ringBuffer[1:]
@@ -226,7 +226,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 						return nil
 					}
 				} else {
-					bot.Logger.Warn("dropping invalid packet", "size", len(packet))
+					bot.Logger.Warn("dropping empty packet")
 					ringBuffer = ringBuffer[1:]
 				}
 			} else {
@@ -244,7 +244,20 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 
 // streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
 func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
-	resp, err := http.Get(session.Station.StreamURL)
+	client := &http.Client{
+		Timeout: 0, // No timeout for streaming
+		Transport: &http.Transport{
+			ReadBufferSize:  256 * 1024, // Increase read buffer to 256KB
+			WriteBufferSize: 256 * 1024,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(session.Context, "GET", session.Station.StreamURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -257,7 +270,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
-	reader := bufio.NewReader(resp.Body)
+	reader := bufio.NewReaderSize(resp.Body, 128*1024) // Increase to 128KB buffer
 	packets := make(chan []byte, packetBufferSize)
 	errChan := make(chan error, 1)
 
@@ -328,9 +341,9 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 							continue
 						}
 					}
-					// Validate Opus packet - minimum size is 1 byte
-					if len(packet) == 0 || len(packet) > 1275 {
-						bot.Logger.Warn("invalid opus packet size", "size", len(packet))
+					// Validate Opus packet - minimum size is 1 byte, no strict maximum
+					if len(packet) == 0 {
+						bot.Logger.Warn("empty opus packet, skipping")
 						continue
 					}
 					frame := make([]byte, len(packet))
@@ -398,7 +411,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 		case <-ticker.C:
 			if len(ringBuffer) > 0 {
 				packet := ringBuffer[0]
-				if len(packet) > 0 && len(packet) <= 1275 {
+				if len(packet) > 0 {
 					select {
 					case vc.OpusSend <- packet:
 						ringBuffer = ringBuffer[1:]
@@ -410,7 +423,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 						return nil
 					}
 				} else {
-					bot.Logger.Warn("dropping invalid packet", "size", len(packet))
+					bot.Logger.Warn("dropping empty packet")
 					ringBuffer = ringBuffer[1:]
 				}
 			} else {
