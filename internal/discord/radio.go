@@ -33,12 +33,21 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	cmd := exec.CommandContext(session.Context, ffmpegPath,
 		"-re",
 		"-i", session.Station.StreamURL,
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
 		"-vn",
 		"-ac", "2",
 		"-ar", "48000",
 		"-c:a", "libopus",
 		"-b:a", "96k",
 		"-frame_duration", "20",
+		"-application", "audio",
+		"-compression_level", "10",
+		"-packet_loss", "15",
+		"-vbr", "on",
+		"-bufsize", "192k",
+		"-max_muxing_queue_size", "1024",
 		"-f", "ogg",
 		"pipe:1",
 	)
@@ -47,6 +56,20 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	if err != nil {
 		return err
 	}
+
+	// Set stderr to capture ffmpeg errors
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	// Log ffmpeg errors in background
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			bot.Logger.Debug("ffmpeg", "output", scanner.Text())
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
 		return err
