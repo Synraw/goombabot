@@ -17,7 +17,6 @@ import (
 const (
 	packetBufferSize   = 2000
 	initialBufferSize  = 150 // Increase from 100 -> 3 seconds (more headroom)
-	minBufferSize      = 75  // Increase from 50 -> 1.5 seconds minimum
 	maxBufferSize      = 400 // Increase from 300 -> 8 seconds maximum
 	tickInterval       = 20 * time.Millisecond
 	opusSendTimeout    = 100 * time.Millisecond

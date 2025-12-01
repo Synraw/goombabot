@@ -124,7 +124,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// check if already in a voice channel and streaming
-	if _, ok := s.VoiceConnections[i.GuildID]; ok || bot.radioSessions[i.GuildID] != nil {
+	if _, ok := s.VoiceConnections[i.GuildID]; ok && bot.radioSessions[i.GuildID] != nil {
 		_ = s.InteractionRespond(i.Interaction, createResponse("Already streaming in a voice channel. Use /stop to stop the current stream first."))
 		deleteMessageAfter(s, i, shortDelay)
 		return
