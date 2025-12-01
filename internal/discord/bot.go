@@ -146,7 +146,11 @@ func NewCommandDef(
 }
 
 // AddCommand adds a command definition to the bot.
-func (b *Bot) AddCommand(command string, description string, handler CommandHandler, opts ...func(*discordgo.ApplicationCommand)) {
+func (b *Bot) AddCommand(
+	command, description string,
+	handler CommandHandler,
+	opts ...func(*discordgo.ApplicationCommand),
+) {
 	b.commands[command] = NewCommandDef(command, description, handler, opts...)
 }
 

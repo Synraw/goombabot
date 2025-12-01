@@ -94,7 +94,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		defer func() {
 			_ = vc.Disconnect()
 			bot.radioMutex.Lock()
-			if session, ok := bot.radioSessions[guild.ID]; !ok {
+			if session, ok := bot.radioSessions[guild.ID]; ok {
 				session.Cancel()
 				delete(bot.radioSessions, guild.ID)
 			}
