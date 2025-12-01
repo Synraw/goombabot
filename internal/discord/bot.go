@@ -24,6 +24,7 @@ type RadioStation struct {
 	ID        int
 	Name      string
 	StreamURL string
+	IsOpus    bool
 }
 
 type StreamSession struct {
@@ -75,13 +76,17 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
+	isOpus := false
 	// Load radio stations into bot
 	for _, station := range radioStations {
 		opusMountUrl := station.ListenURL
-		// Find the opus mount if available
+
+		// Find the opus mount if available otherwise default to primary listen URL
 		for _, mount := range station.Mounts {
 			if mount.Format == "opus" {
 				opusMountUrl = mount.URL
+				isOpus = true
+				break
 			}
 		}
 		bot.Logger.Info("Found station playing", "name", station.Name, "id", station.ID)
@@ -89,6 +94,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 			ID:        station.ID,
 			Name:      station.Name,
 			StreamURL: opusMountUrl,
+			IsOpus:    isOpus,
 		}
 	}
 

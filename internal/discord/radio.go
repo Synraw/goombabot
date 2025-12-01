@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"time"
@@ -12,9 +13,9 @@ import (
 )
 
 const (
-	packetBufferSize  = 800
-	initialBufferSize = 150
-	maxBufferSize     = 400
+	packetBufferSize  = 400
+	initialBufferSize = 50
+	maxBufferSize     = 200
 	tickInterval      = 20 * time.Millisecond
 	opusSendTimeout   = 100 * time.Millisecond
 )
@@ -173,6 +174,155 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		case pkt, ok := <-packets:
 			if !ok {
 				return errors.New("ffmpeg exited before buffer filled")
+			}
+			ringBuffer = append(ringBuffer, pkt)
+		}
+	}
+
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+
+	consecutiveEmptyCount := 0
+	maxConsecutiveEmpty := 5
+
+	for {
+		select {
+		case <-session.Context.Done():
+			return nil
+		case err := <-errChan:
+			return err
+		case pkt, ok := <-packets:
+			if !ok {
+				// Stream ended, drain remaining buffer
+				for len(ringBuffer) > 0 {
+					select {
+					case vc.OpusSend <- ringBuffer[0]:
+						ringBuffer = ringBuffer[1:]
+						time.Sleep(tickInterval)
+					case <-session.Context.Done():
+						return nil
+					}
+				}
+				return nil
+			}
+			ringBuffer = append(ringBuffer, pkt)
+			if len(ringBuffer) > maxBufferSize {
+				ringBuffer = ringBuffer[1:] // Remove oldest
+			}
+			consecutiveEmptyCount = 0 // Reset on packet arrival
+		case <-ticker.C:
+			if len(ringBuffer) > 0 {
+				packet := ringBuffer[0]
+				// Double-check packet validity before sending
+				if len(packet) > 0 && len(packet) <= 1275 {
+					select {
+					case vc.OpusSend <- packet:
+						ringBuffer = ringBuffer[1:]
+						consecutiveEmptyCount = 0
+					case <-time.After(opusSendTimeout):
+						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
+						ringBuffer = ringBuffer[1:] // Skip problematic packet
+					case <-session.Context.Done():
+						return nil
+					}
+				} else {
+					bot.Logger.Warn("dropping invalid packet", "size", len(packet))
+					ringBuffer = ringBuffer[1:]
+				}
+			} else {
+				consecutiveEmptyCount++
+				if consecutiveEmptyCount >= maxConsecutiveEmpty {
+					bot.Logger.Warn("buffer empty for too long",
+						"count", consecutiveEmptyCount,
+						"packetsChannelLen", len(packets))
+					consecutiveEmptyCount = 0 // Reset to avoid spam
+				}
+			}
+		}
+	}
+}
+
+// streamRadioDirectOpus streams audio directly as Opus to Discord, without transcoding.
+func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
+	resp, err := http.Get(session.Station.StreamURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	vc.Speaking(true)
+	defer vc.Speaking(false)
+
+	reader := bufio.NewReader(resp.Body)
+	packets := make(chan []byte, packetBufferSize)
+	errChan := make(chan error, 1)
+
+	go func() {
+		defer close(packets)
+		invalidPacketCount := 0
+		const maxInvalidPackets = 10
+
+		for {
+			select {
+			case <-session.Context.Done():
+				return
+			default:
+			}
+			header := make([]byte, 27)
+			if _, err := io.ReadFull(reader, header); err != nil {
+				if err != io.EOF {
+					bot.Logger.Error("http/opus read header error", "err", err)
+					errChan <- err
+				}
+				return
+			}
+			// Opus packets don't have a magic header like Ogg, but we can still validate basic properties
+			// For instance, the packet size should not exceed the maximum Opus frame size
+			packetSize := int(header[0])<<8 | int(header[1])
+			if packetSize < 1 || packetSize > 1275 {
+				invalidPacketCount++
+				if invalidPacketCount > maxInvalidPackets {
+					bot.Logger.Error("too many invalid Opus packets, aborting")
+					return
+				}
+				bot.Logger.Warn("invalid Opus packet size, skipping")
+				continue
+			}
+			invalidPacketCount = 0 // Reset on valid packet size
+
+			packet := make([]byte, packetSize)
+			if _, err := io.ReadFull(reader, packet); err != nil {
+				bot.Logger.Error("http/opus read packet error", "err", err)
+				return
+			}
+			// Prepend the packet size as two bytes (big-endian) for Discord
+			discordPacket := make([]byte, packetSize+2)
+			discordPacket[0] = byte(packetSize >> 8)
+			discordPacket[1] = byte(packetSize & 0xFF)
+			copy(discordPacket[2:], packet)
+
+			select {
+			case packets <- discordPacket:
+			case <-session.Context.Done():
+				return
+			default:
+				<-packets
+				packets <- discordPacket
+			}
+		}
+	}()
+
+	// Use a ring buffer or slice for continuous buffering
+	ringBuffer := make([][]byte, 0, maxBufferSize)
+
+	// Fill initial buffer
+	for len(ringBuffer) < initialBufferSize {
+		select {
+		case <-session.Context.Done():
+			return nil
+		case pkt, ok := <-packets:
+			if !ok {
+				return errors.New("http stream exited before buffer filled")
 			}
 			ringBuffer = append(ringBuffer, pkt)
 		}
