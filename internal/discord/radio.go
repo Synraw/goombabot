@@ -388,7 +388,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 	defer ticker.Stop()
 
 	consecutiveEmptyCount := 0
-	maxConsecutiveEmpty := 5
+	maxConsecutiveEmpty := 50 // Match ffmpeg version - 1 second of empty ticks
 
 	for {
 		select {
@@ -398,17 +398,9 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 			return err
 		case pkt, ok := <-packets:
 			if !ok {
-				// Stream ended, drain remaining buffer
-				for len(ringBuffer) > 0 {
-					select {
-					case vc.OpusSend <- ringBuffer[0]:
-						ringBuffer = ringBuffer[1:]
-						time.Sleep(tickInterval)
-					case <-session.Context.Done():
-						return nil
-					}
-				}
-				return nil
+				// Stream ended unexpectedly - this triggers reconnection
+				bot.Logger.Warn("packet channel closed unexpectedly")
+				return errors.New("stream ended unexpectedly")
 			}
 			ringBuffer = append(ringBuffer, pkt)
 			if len(ringBuffer) > maxBufferSize {
@@ -436,10 +428,18 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 			} else {
 				consecutiveEmptyCount++
 				if consecutiveEmptyCount >= maxConsecutiveEmpty {
-					bot.Logger.Warn("buffer empty for too long",
+					// Buffer starvation for too long - force reconnection
+					bot.Logger.Error("buffer starved, stream appears dead",
 						"count", consecutiveEmptyCount,
 						"packetsChannelLen", len(packets))
-					consecutiveEmptyCount = 0
+					return errors.New("buffer starvation detected")
+				}
+				if consecutiveEmptyCount%10 == 0 && consecutiveEmptyCount > 0 {
+					// Log every 200ms during starvation
+					bot.Logger.Warn("buffer empty",
+						"count", consecutiveEmptyCount,
+						"packetsChannelLen", len(packets),
+						"ringBufferLen", len(ringBuffer))
 				}
 			}
 		}
