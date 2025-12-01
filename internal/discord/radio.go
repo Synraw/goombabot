@@ -60,20 +60,6 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 		return err
 	}
 
-	// Set stderr to capture ffmpeg errors
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	// Log ffmpeg errors in background
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			bot.Logger.Debug("ffmpeg", "output", scanner.Text())
-		}
-	}()
-
 	if err := cmd.Start(); err != nil {
 		return err
 	}
