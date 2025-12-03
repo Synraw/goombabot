@@ -293,18 +293,24 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 		return fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
 	}
 
-	// Check content type to ensure it's Ogg/Opus
+	// Verify content type is Ogg/Opus
 	contentType := resp.Header.Get("Content-Type")
-	bot.Logger.Info("streaming direct opus", "contentType", contentType)
+	if contentType != "application/ogg" && contentType != "audio/ogg" {
+		bot.Logger.Warn("stream content type is not Ogg/Opus", "contentType", contentType)
+		return errors.New("stream is not in Ogg/Opus format")
+	}
 
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
+	// Create buffered reader with increased buffer size
 	reader := bufio.NewReaderSize(resp.Body, 128*1024) // Increase to 128KB buffer
 	packets := make(chan []byte, packetBufferSize)
 	errChan := make(chan error, 1)
 
+	// Parse Ogg/Opus stream
 	go bot.parseOggOpusStream(session.Context, reader, packets, errChan)
 
+	// Send Opus packets to Discord
 	return bot.sendOpusPackets(vc, session, packets, errChan)
 }
