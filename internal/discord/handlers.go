@@ -74,7 +74,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, false)
+	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
 	if err != nil {
 		bot.respondWithError(s, i, "Failed to join voice channel.", err, shortDelay)
 		return
