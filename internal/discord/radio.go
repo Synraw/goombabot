@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -20,7 +21,7 @@ const (
 	initialBufferSize  = 150 // Increase from 100 -> 3 seconds (more headroom)
 	maxBufferSize      = 400 // Increase from 300 -> 8 seconds maximum
 	tickInterval       = 20 * time.Millisecond
-	opusSendTimeout    = 850 * time.Millisecond
+	opusSendTimeout    = 500 * time.Millisecond
 	maxInvalidOggPages = 10
 )
 
@@ -39,7 +40,7 @@ func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, pa
 		header := make([]byte, 27)
 		if _, err := io.ReadFull(reader, header); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				bot.Logger.Error("ogg read header error", "err", err, "header_data", hex.EncodeToString(header))
+				bot.Logger.Error("ogg read header error", "err", err, "headerData", hex.EncodeToString(header))
 				select {
 				case errChan <- fmt.Errorf("ogg header read failed: %w", err):
 				default:
@@ -275,7 +276,8 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 			WriteBufferSize:       256 * 1024,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second, // Only initial response timeout
+			ResponseHeaderTimeout: 10 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		},
 	}
 
@@ -305,7 +307,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 	defer vc.Speaking(false)
 
 	// Create buffered reader with increased buffer size
-	reader := bufio.NewReaderSize(resp.Body, 128*1024) // Increase to 128KB buffer
+	reader := bufio.NewReaderSize(resp.Body, 128*1024)
 	packets := make(chan []byte, packetBufferSize)
 	errChan := make(chan error, 1)
 
