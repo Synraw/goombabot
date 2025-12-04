@@ -150,26 +150,24 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			return nil
 		case err := <-errChan:
 			return err
-		case pkt, ok := <-packets:
-			if !ok {
-				bot.Logger.Warn("packet channel closed unexpectedly")
-				return errors.New("stream ended unexpectedly")
-			}
-			ringBuffer = append(ringBuffer, pkt)
-
-			// Dynamic buffer management
-			bufferLevel := len(ringBuffer)
-			if bufferLevel > maxBufferSize {
-				// Drop oldest packets if overflowing
-				dropCount := bufferLevel - maxBufferSize
-				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount)
-				ringBuffer = ringBuffer[dropCount:]
-			}
-			consecutiveEmptyCount = 0
 		case <-ticker.C:
-			// If buffer is critically low, skip this tick to let it refill
-			if len(ringBuffer) < 10 && consecutiveEmptyCount == 0 {
-				continue
+			// Try to drain excess packets from channel before sending
+			drainedCount := 0
+			for len(packets) > packetBufferSize*3/4 && drainedCount < 50 {
+				select {
+				case pkt := <-packets:
+					ringBuffer = append(ringBuffer, pkt)
+					drainedCount++
+				default:
+					break
+				}
+			}
+
+			// Dynamic buffer management - keep it reasonable
+			if len(ringBuffer) > maxBufferSize {
+				dropCount := len(ringBuffer) - maxBufferSize
+				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount, "packetsWaiting", len(packets))
+				ringBuffer = ringBuffer[dropCount:]
 			}
 
 			if len(ringBuffer) > 0 {
@@ -181,26 +179,31 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 					case vc.OpusSend <- packet:
 						consecutiveEmptyCount = 0
 					case <-time.After(opusSendTimeout):
-						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
+						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer), "packetsWaiting", len(packets))
+						// Don't return error, just skip this packet
+						consecutiveEmptyCount++
 					case <-session.Context.Done():
 						return nil
 					}
 				}
 			} else {
-				consecutiveEmptyCount++
-				if consecutiveEmptyCount >= maxConsecutiveEmpty {
-					// Buffer starvation for too long - force reconnection
-					bot.Logger.Error("buffer starved, stream appears dead",
-						"count", consecutiveEmptyCount,
-						"packetsChannelLen", len(packets))
-					return errors.New("buffer starvation detected")
-				}
-				if consecutiveEmptyCount%10 == 0 && consecutiveEmptyCount > 0 {
-					// Log every 200ms during starvation
-					bot.Logger.Warn("buffer empty",
-						"count", consecutiveEmptyCount,
-						"packetsChannelLen", len(packets),
-						"ringBufferLen", len(ringBuffer))
+				// Buffer empty - try to pull one packet immediately
+				select {
+				case pkt, ok := <-packets:
+					if !ok {
+						bot.Logger.Warn("packet channel closed unexpectedly")
+						return errors.New("stream ended unexpectedly")
+					}
+					ringBuffer = append(ringBuffer, pkt)
+				default:
+					consecutiveEmptyCount++
+					if consecutiveEmptyCount >= maxConsecutiveEmpty {
+						// Buffer starvation for too long - force reconnection
+						bot.Logger.Error("buffer starved, stream appears dead",
+							"count", consecutiveEmptyCount,
+							"packetsChannelLen", len(packets))
+						return errors.New("buffer starvation detected")
+					}
 				}
 			}
 		}
