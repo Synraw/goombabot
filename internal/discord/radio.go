@@ -3,6 +3,7 @@ package discord
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, pa
 		header := make([]byte, 27)
 		if _, err := io.ReadFull(reader, header); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				bot.Logger.Error("ogg read header error", "err", err)
+				bot.Logger.Error("ogg read header error", "err", err, "header_data", hex.EncodeToString(header))
 				select {
 				case errChan <- fmt.Errorf("ogg header read failed: %w", err):
 				default:
@@ -52,7 +53,7 @@ func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, pa
 				bot.Logger.Error("too many invalid Ogg pages, aborting")
 				return
 			}
-			bot.Logger.Warn("invalid Ogg page, skipping")
+			bot.Logger.Warn("invalid ogg page, skipping")
 			continue
 		}
 		invalidPacketCount = 0 // Reset on valid header

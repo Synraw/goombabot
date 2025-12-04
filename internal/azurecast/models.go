@@ -158,3 +158,20 @@ type Stations struct {
 	HlsURL       interface{}   `json:"hls_url"`
 	HlsListeners int           `json:"hls_listeners"`
 }
+
+type StationSongRequest struct {
+	RequestID  string `json:"request_id"`
+	RequestURL string `json:"request_url"`
+	Song       struct {
+		ID           string `json:"id"`
+		Art          string `json:"art"`
+		CustomFields []any  `json:"custom_fields"`
+		Text         string `json:"text"`
+		Artist       string `json:"artist"`
+		Title        string `json:"title"`
+		Album        string `json:"album"`
+		Genre        string `json:"genre"`
+		Isrc         string `json:"isrc"`
+		Lyrics       string `json:"lyrics"`
+	} `json:"song"`
+}

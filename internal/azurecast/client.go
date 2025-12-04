@@ -187,3 +187,12 @@ func (c *Client) SkipCurrentSong(ctx context.Context, stationID string) error {
 	}
 	return c.request(ctx, http.MethodPost, "/api/station/"+url.PathEscape(stationID)+"/backend/skip", nil, nil)
 }
+
+func (c *Client) GetStationRequestableSongs(ctx context.Context, stationID string) ([]StationSongRequest, error) {
+	if strings.TrimSpace(stationID) == "" {
+		return nil, errors.New("azurecast: stationID must not be empty")
+	}
+	var payload []StationSongRequest
+	err := c.request(ctx, http.MethodGet, "/api/station/"+url.PathEscape(stationID)+"/requests", nil, &payload)
+	return payload, err
+}
