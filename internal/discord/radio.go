@@ -18,11 +18,12 @@ import (
 
 const (
 	packetBufferSize   = 2000
-	initialBufferSize  = 150 // Increase from 100 -> 3 seconds (more headroom)
-	maxBufferSize      = 400 // Increase from 300 -> 8 seconds maximum
+	initialBufferSize  = 150
+	maxBufferSize      = 400
 	tickInterval       = 20 * time.Millisecond
 	opusSendTimeout    = 500 * time.Millisecond
 	maxInvalidOggPages = 10
+	maxSendTimeouts    = 50 // new: cap consecutive send timeouts before reset
 )
 
 // parseOggOpusStream reads Ogg pages from a reader and sends Opus packets to a channel.
@@ -145,6 +146,7 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 
 	consecutiveEmptyCount := 0
 	maxConsecutiveEmpty := 50 // 1 second of empty ticks
+	consecutiveSendTimeouts := 0
 
 	for {
 		select {
@@ -153,7 +155,6 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 		case err := <-errChan:
 			return err
 		case pkt, ok := <-packets:
-			// Continuously pull from channel when available
 			if !ok {
 				bot.Logger.Warn("packet channel closed")
 				return errors.New("stream ended unexpectedly")
@@ -176,12 +177,17 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 					select {
 					case vc.OpusSend <- packet:
 						consecutiveEmptyCount = 0
+						consecutiveSendTimeouts = 0
 					case <-time.After(opusSendTimeout):
-						bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer))
-						consecutiveEmptyCount++
-						if consecutiveEmptyCount >= maxConsecutiveEmpty {
-							return errors.New("opus send consistently timing out")
+						consecutiveSendTimeouts++
+						if consecutiveSendTimeouts == 1 || consecutiveSendTimeouts%10 == 0 {
+							bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer), "timeouts", consecutiveSendTimeouts)
 						}
+						if consecutiveSendTimeouts >= maxSendTimeouts {
+							// reset counter to avoid stopping the stream; drop the packet
+							consecutiveSendTimeouts = 0
+						}
+						// drop this packet and continue
 					case <-session.Context.Done():
 						return nil
 					}
