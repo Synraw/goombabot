@@ -90,6 +90,13 @@ type APIError struct {
 	Body       string
 }
 
+// StandardResponse represents a standard response from AzuraCast API.
+type StandardResponse struct {
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
+	FormattedMessage string `json:"formatted_message"`
+}
+
 func (e *APIError) Error() string {
 	return fmt.Sprintf("azurecast: unexpected status %d: %s", e.StatusCode, e.Body)
 }
@@ -188,11 +195,25 @@ func (c *Client) SkipCurrentSong(ctx context.Context, stationID string) error {
 	return c.request(ctx, http.MethodPost, "/api/station/"+url.PathEscape(stationID)+"/backend/skip", nil, nil)
 }
 
+// GetStationRequestableSongs retrieves the list of requestable songs for the given station.
 func (c *Client) GetStationRequestableSongs(ctx context.Context, stationID string) ([]StationSongRequest, error) {
 	if strings.TrimSpace(stationID) == "" {
 		return nil, errors.New("azurecast: stationID must not be empty")
 	}
 	var payload []StationSongRequest
-	err := c.request(ctx, http.MethodGet, "/api/station/"+url.PathEscape(stationID)+"/requests", nil, &payload)
+	err := c.request(ctx, http.MethodGet,
+		"/api/station/"+url.PathEscape(stationID)+"/requests",
+		nil, &payload)
 	return payload, err
+}
+
+// RequestStationSong requests a song to be played on the given station.
+func (c *Client) RequestStationSong(ctx context.Context, stationID string, requestID StationSongRequest) (response StandardResponse, err error) {
+	if strings.TrimSpace(stationID) == "" {
+		return StandardResponse{}, errors.New("azurecast: stationID must not be empty")
+	}
+	err = c.request(ctx, http.MethodPost,
+		"/api/station/"+url.PathEscape(stationID)+"/request/"+url.PathEscape(requestID.RequestID),
+		nil, &response)
+	return
 }

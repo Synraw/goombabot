@@ -76,11 +76,10 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
-	isOpus := false
 	// Load radio stations into bot
 	for _, station := range radioStations {
 		opusMountUrl := station.ListenURL
-
+		isOpus := false
 		// Find the opus mount if available otherwise default to primary listen URL
 		for _, mount := range station.Mounts {
 			if mount.Format == "opus" {
@@ -89,7 +88,8 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 				break
 			}
 		}
-		bot.Logger.Info("Found station playing", "name", station.Name, "id", station.ID)
+
+		bot.Logger.Info("station found", "name", station.Name, "id", station.ID)
 		bot.radioStations[station.ID] = RadioStation{
 			ID:        station.ID,
 			Name:      station.Name,
@@ -102,6 +102,14 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 	bot.AddCommand("skip", "Skips the currently playing song on the radio station", (*Bot).handleSkip)
 	bot.AddCommand("nowplaying", "Shows the currently playing song on the radio station", (*Bot).handleNowPlaying)
+	bot.AddCommand("request", "Request a song to be played on the radio station", (*Bot).handleRequest,
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "song",
+			Description: "The name of the song to request",
+			Required:    true,
+		},
+	)
 
 	return bot, nil
 }
@@ -137,15 +145,13 @@ func (b *Bot) Start(ctx context.Context) error {
 func NewCommandDef(
 	name, description string,
 	handler CommandHandler,
-	opts ...func(*discordgo.ApplicationCommand),
+	options ...*discordgo.ApplicationCommandOption,
 ) CommandDef {
 	cmd := &discordgo.ApplicationCommand{
 		Name:        name,
 		Description: description,
 		Type:        discordgo.ChatApplicationCommand,
-	}
-	for _, opt := range opts {
-		opt(cmd)
+		Options:     options,
 	}
 	return CommandDef{
 		Command: cmd,
@@ -157,9 +163,9 @@ func NewCommandDef(
 func (b *Bot) AddCommand(
 	command, description string,
 	handler CommandHandler,
-	opts ...func(*discordgo.ApplicationCommand),
+	options ...*discordgo.ApplicationCommandOption,
 ) {
-	b.commands[command] = NewCommandDef(command, description, handler, opts...)
+	b.commands[command] = NewCommandDef(command, description, handler, options...)
 }
 
 // RegisterCommands registers all commands with Discord.

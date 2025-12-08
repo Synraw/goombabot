@@ -3,9 +3,11 @@ package discord
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/synraw/goombabot/internal/azurecast"
 )
 
 const (
@@ -293,6 +295,85 @@ func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionC
 	}
 	_ = s.InteractionRespond(i.Interaction, createResponse(response))
 	deleteMessageAfter(s, i, longDelay)
+}
+
+func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		return
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
+		return
+	}
+
+	// get current session
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
+		return
+	}
+
+	// Extract song name early
+	opts := i.ApplicationCommandData().Options
+	if len(opts) == 0 {
+		bot.respondWithError(s, i, "Song name is required.", nil, shortDelay)
+		return
+	}
+	songName := opts[0].StringValue() // only one option for request
+
+	// Get requestable songs
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(session.Station.ID))
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to get requestable songs.", err, shortDelay)
+		return
+	}
+
+	// Find matching song (case-insensitive)
+	matchingSongs := map[string]azurecast.StationSongRequest{}
+	songNameLower := strings.ToLower(songName)
+	for i := range requestableSongs {
+		if strings.Contains(strings.ToLower(requestableSongs[i].Song.Title), songNameLower) {
+			matchingSongs[requestableSongs[i].RequestID] = requestableSongs[i]
+		}
+	}
+
+	// If no song found
+	if len(matchingSongs) == 0 {
+		bot.respondWithError(s, i, "Song not found in requestable list.", nil, shortDelay)
+		return
+	}
+
+	// TODO: Actually ask user if multiple matches found
+	var requestedSong *azurecast.StationSongRequest
+	for _, song := range matchingSongs {
+		requestedSong = &song
+		break
+	}
+
+	// Request the song
+	response, err := bot.azureApiClient.RequestStationSong(context.Background(), strconv.Itoa(session.Station.ID), *requestedSong)
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to request the song.", err, shortDelay)
+		return
+	}
+
+	// Check response success
+	if !response.Success {
+		bot.respondWithError(s, i, "Failed to request the song: "+response.Message, nil, shortDelay)
+		return
+	}
+
+	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+requestedSong.Song.Title+"** by **"+requestedSong.Song.Artist+"**."))
+	deleteMessageAfter(s, i, shortDelay)
 }
 
 // handleComponent routes interaction component events to the appropriate handler.
