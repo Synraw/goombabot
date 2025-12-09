@@ -264,6 +264,7 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 
 	var stats streamStats
 	consecutiveEmpty := 0
+	lastOverflowLog := time.Time{}
 
 	for {
 		select {
@@ -273,7 +274,6 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			return nil
 
 		case err := <-errChan:
-			// Check if this is due to context cancellation
 			if session.Context.Err() != nil {
 				bot.Logger.Debug("error received after context cancelled", "err", err)
 				bot.logStreamStats(&stats)
@@ -303,8 +303,18 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			if len(ringBuffer) > maxBufferSize {
 				dropCount := len(ringBuffer) - maxBufferSize
 				stats.packetsDropped += dropCount
-				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount, "totalDropped", stats.packetsDropped)
 				ringBuffer = ringBuffer[dropCount:]
+
+				// Only log every second to avoid spam
+				if time.Since(lastOverflowLog) > time.Second {
+					bot.Logger.Warn("ring buffer overflow",
+						"dropping", dropCount,
+						"totalDropped", stats.packetsDropped,
+						"bufferLen", len(ringBuffer),
+						"opusChanLen", len(vc.OpusSend),
+						"opusChanCap", cap(vc.OpusSend))
+					lastOverflowLog = time.Now()
+				}
 			}
 
 		case <-ticker.C:
