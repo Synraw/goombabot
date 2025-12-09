@@ -17,13 +17,13 @@ import (
 )
 
 const (
+	// Streaming constants
 	packetBufferSize    = 2000
 	initialBufferSize   = 150
 	maxBufferSize       = 400
 	tickInterval        = 20 * time.Millisecond
 	opusSendTimeout     = 500 * time.Millisecond
 	maxInvalidOggPages  = 10
-	maxSendTimeouts     = 50
 	maxConsecutiveEmpty = 50 // 1 second of empty ticks
 
 	// Ogg constants
@@ -55,6 +55,7 @@ const (
 	httpKeepAlive       = 30 * time.Second
 	oggReaderBufferSize = 128 * 1024
 
+	// Content types
 	contentTypeOgg      = "application/ogg"
 	contentTypeAudioOgg = "audio/ogg"
 )

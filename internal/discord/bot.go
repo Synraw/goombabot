@@ -165,7 +165,7 @@ func (b *Bot) RegisterCommands() {
 	// route all interaction events to our dispatcher
 	b.Session.AddHandler(b.onInteractionUpdate)
 	// route voice state updates to our handler
-	//b.Session.AddHandler(b.onVoiceStateUpdate)
+	b.Session.AddHandler(b.onVoiceStateUpdate)
 	// route events for when we join a guild
 	b.Session.AddHandler(b.onGuildCreate)
 	// route events for when we leave a guild
@@ -241,20 +241,23 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 		"guildID", vs.GuildID,
 		"hasActiveSession", bot.radioSessions[vs.GuildID] != nil)
 
-	if vs.ChannelID == "" { // Bot has disconnected from voice channel
-		guildID := vs.GuildID
-		bot.Logger.Info("bot disconnected from voice", "guild_id", guildID)
+	if vs.ChannelID == "" {
+		// Verify bot is actually disconnected by checking voice connection
+		vc, hasVoiceConn := s.VoiceConnections[vs.GuildID]
+		if !hasVoiceConn || vc == nil {
+			guildID := vs.GuildID
+			bot.Logger.Info("bot confirmed disconnected from voice", "guild_id", guildID)
 
-		bot.radioMutex.Lock()
-		if session, ok := bot.radioSessions[guildID]; ok && session != nil {
-			bot.Logger.Debug("cancelling active radio session", "guild_id", guildID)
-			session.Cancel()
-			delete(bot.radioSessions, guildID)
-		}
-		bot.radioMutex.Unlock()
-
-		if vc, ok := s.VoiceConnections[guildID]; ok {
-			_ = vc.Disconnect()
+			bot.radioMutex.Lock()
+			if session, ok := bot.radioSessions[guildID]; ok && session != nil {
+				bot.Logger.Debug("cancelling active radio session", "guild_id", guildID)
+				session.Cancel()
+				delete(bot.radioSessions, guildID)
+			}
+			bot.radioMutex.Unlock()
+		} else {
+			bot.Logger.Warn("spurious voice state update (channelID empty but still connected)",
+				"guild_id", vs.GuildID)
 		}
 	}
 }
