@@ -235,14 +235,24 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 	if vs.UserID != s.State.User.ID {
 		return
 	}
+
+	bot.Logger.Debug("voice state update received",
+		"channelID", vs.ChannelID,
+		"guildID", vs.GuildID,
+		"hasActiveSession", bot.radioSessions[vs.GuildID] != nil)
+
 	if vs.ChannelID == "" { // Bot has disconnected from voice channel
 		guildID := vs.GuildID
+		bot.Logger.Info("bot disconnected from voice", "guild_id", guildID)
+
 		bot.radioMutex.Lock()
 		if session, ok := bot.radioSessions[guildID]; ok && session != nil {
+			bot.Logger.Debug("cancelling active radio session", "guild_id", guildID)
 			session.Cancel()
 			delete(bot.radioSessions, guildID)
 		}
 		bot.radioMutex.Unlock()
+
 		if vc, ok := s.VoiceConnections[guildID]; ok {
 			_ = vc.Disconnect()
 		}
