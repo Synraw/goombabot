@@ -373,7 +373,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+requestedSong.Song.Text+"** by **"+requestedSong.Song.Artist+"**."))
-	deleteMessageAfter(s, i, shortDelay)
+	deleteMessageAfter(s, i, time.Second*10)
 }
 
 // handleComponent routes interaction component events to the appropriate handler.
