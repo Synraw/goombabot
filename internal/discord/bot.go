@@ -165,7 +165,7 @@ func (b *Bot) RegisterCommands() {
 	// route all interaction events to our dispatcher
 	b.Session.AddHandler(b.onInteractionUpdate)
 	// route voice state updates to our handler
-	b.Session.AddHandler(b.onVoiceStateUpdate)
+	//b.Session.AddHandler(b.onVoiceStateUpdate)
 	// route events for when we join a guild
 	b.Session.AddHandler(b.onGuildCreate)
 	// route events for when we leave a guild
