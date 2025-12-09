@@ -46,6 +46,24 @@ type Bot struct {
 	radioSessions  map[string]*StreamSession
 }
 
+// AddCommand adds a command definition to the bot.
+func (b *Bot) AddCommand(
+	command, description string,
+	handler CommandHandler,
+	options ...*discordgo.ApplicationCommandOption,
+) {
+	cmd := &discordgo.ApplicationCommand{
+		Name:        command,
+		Description: description,
+		Type:        discordgo.ChatApplicationCommand,
+		Options:     options,
+	}
+	b.commands[command] = CommandDef{
+		Command: cmd,
+		Handle:  handler,
+	}
+}
+
 // New creates a new Discord bot instance.
 func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	sess, err := discordgo.New("Bot " + token)
@@ -71,6 +89,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
+	// Fetch available radio stations from Azurecast
 	radioStations, err := bot.azureApiClient.GetStations(context.Background())
 	if err != nil {
 		return nil, err
@@ -141,33 +160,6 @@ func (b *Bot) Start(ctx context.Context) error {
 	return nil
 }
 
-// NewCommandDef is the *only* place you construct a CommandDef.
-func NewCommandDef(
-	name, description string,
-	handler CommandHandler,
-	options ...*discordgo.ApplicationCommandOption,
-) CommandDef {
-	cmd := &discordgo.ApplicationCommand{
-		Name:        name,
-		Description: description,
-		Type:        discordgo.ChatApplicationCommand,
-		Options:     options,
-	}
-	return CommandDef{
-		Command: cmd,
-		Handle:  handler,
-	}
-}
-
-// AddCommand adds a command definition to the bot.
-func (b *Bot) AddCommand(
-	command, description string,
-	handler CommandHandler,
-	options ...*discordgo.ApplicationCommandOption,
-) {
-	b.commands[command] = NewCommandDef(command, description, handler, options...)
-}
-
 // RegisterCommands registers all commands with Discord.
 func (b *Bot) RegisterCommands() {
 	// route all interaction events to our dispatcher
@@ -203,6 +195,18 @@ func (b *Bot) RegisterCommands() {
 
 // event handlers
 
+// onInteractionUpdate handles all interaction events and routes them to the appropriate handler.
+func (b *Bot) onInteractionUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.Type {
+	case discordgo.InteractionMessageComponent:
+		b.handleComponent(s, i)
+	case discordgo.InteractionApplicationCommand:
+		b.handleCommands(s, i)
+	default:
+		b.Logger.Warn("Unhandled interaction type", "type", i.Type)
+	}
+}
+
 // onGuildCreate handles guild creation events.
 func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	b.Logger.Info("joined guild", "name", g.Name, "id", g.ID)
@@ -224,18 +228,6 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 // onGuildDelete handles guild deletion events.
 func (b *Bot) onGuildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
 	b.Logger.Debug("left guild", "name", g.Name, "id", g.ID)
-}
-
-// onInteractionUpdate handles all interaction events and routes them to the appropriate handler.
-func (b *Bot) onInteractionUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	switch i.Type {
-	case discordgo.InteractionMessageComponent:
-		b.handleComponent(s, i)
-	case discordgo.InteractionApplicationCommand:
-		b.handleCommands(s, i)
-	default:
-		b.Logger.Warn("Unhandled interaction type", "type", i.Type)
-	}
 }
 
 // onVoiceStateUpdate handles voice state updates to stop radio streaming when the bot leaves a voice channel.

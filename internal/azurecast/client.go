@@ -42,7 +42,9 @@ func NewClient(baseURL string, opts ...Option) (*Client, error) {
 	}
 
 	// Ensure we never end up with double slashes when appending paths.
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if !strings.HasSuffix(parsed.Path, "/") {
+		parsed.Path += "/"
+	}
 
 	client := &Client{
 		baseURL: parsed,
@@ -54,10 +56,6 @@ func NewClient(baseURL string, opts ...Option) (*Client, error) {
 
 	for _, opt := range opts {
 		opt(client)
-	}
-
-	if client.httpClient == nil {
-		client.httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 
 	return client, nil
@@ -90,20 +88,13 @@ type APIError struct {
 	Body       string
 }
 
-// StandardResponse represents a standard response from AzuraCast API.
-type StandardResponse struct {
-	Success          bool   `json:"success"`
-	Message          string `json:"message"`
-	FormattedMessage string `json:"formatted_message"`
-}
-
 func (e *APIError) Error() string {
 	return fmt.Sprintf("azurecast: unexpected status %d: %s", e.StatusCode, e.Body)
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil, errors.New("azurecast: context must not be nil")
 	}
 
 	rel, err := url.Parse(path)
@@ -128,28 +119,11 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	return req, nil
 }
 
-func (c *Client) do(req *http.Request, v any) error {
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("azurecast: do request: %w", err)
+// validateStationID is a helper to validate station IDs.
+func validateStationID(stationID string) error {
+	if strings.TrimSpace(stationID) == "" {
+		return errors.New("azurecast: stationID must not be empty")
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return &APIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(snippet))}
-	}
-
-	if v == nil {
-		io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("azurecast: decode response: %w", err)
-	}
-
 	return nil
 }
 
@@ -162,58 +136,89 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	return c.do(req, v)
 }
 
+// do sends the HTTP request and decodes the response.
+func (c *Client) do(req *http.Request, v any) error {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("azurecast: do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for non-2xx status codes
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+		}
+	}
+
+	// If no response body expected (v is nil), we're done
+	if v == nil {
+		return nil
+	}
+
+	// For 204 No Content, don't try to decode
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+
+	// Decode the response body into v
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		return fmt.Errorf("azurecast: decode response: %w", err)
+	}
+
+	return nil
+}
+
 // GetStations retrieves the list of stations from AzuraCast.
 func (c *Client) GetStations(ctx context.Context) ([]Stations, error) {
 	var payload []Stations
-	err := c.request(ctx, http.MethodGet, "/api/stations", nil, &payload)
+	err := c.request(ctx, http.MethodGet, "stations", nil, &payload)
 	return payload, err
 }
 
 // GetNowPlaying retrieves the "now playing" details for all stations.
 func (c *Client) GetNowPlaying(ctx context.Context) ([]NowPlaying, error) {
 	var payload []NowPlaying
-	err := c.request(ctx, http.MethodGet, "/api/nowplaying", nil, &payload)
+	err := c.request(ctx, http.MethodGet, "nowplaying", nil, &payload)
 	return payload, err
 }
 
 // GetStationNowPlaying retrieves the "now playing" details for the given station.
 // stationID should match the shortcode or numeric ID accepted by AzuraCast.
 func (c *Client) GetStationNowPlaying(ctx context.Context, stationID string) (*NowPlaying, error) {
-	if strings.TrimSpace(stationID) == "" {
-		return nil, errors.New("azurecast: stationID must not be empty")
+	if err := validateStationID(stationID); err != nil {
+		return nil, err
 	}
 	var payload NowPlaying
-	err := c.request(ctx, http.MethodGet, "/api/nowplaying/"+url.PathEscape(stationID), nil, &payload)
+	err := c.request(ctx, http.MethodGet, "nowplaying/"+url.PathEscape(stationID), nil, &payload)
 	return &payload, err
 }
 
 // SkipCurrentSong requests AzuraCast to skip the currently playing song
 func (c *Client) SkipCurrentSong(ctx context.Context, stationID string) error {
-	if strings.TrimSpace(stationID) == "" {
-		return errors.New("azurecast: stationID must not be empty")
+	if err := validateStationID(stationID); err != nil {
+		return err
 	}
-	return c.request(ctx, http.MethodPost, "/api/station/"+url.PathEscape(stationID)+"/backend/skip", nil, nil)
+	return c.request(ctx, http.MethodPost, "station/"+url.PathEscape(stationID)+"/backend/skip", nil, nil)
 }
 
 // GetStationRequestableSongs retrieves the list of requestable songs for the given station.
 func (c *Client) GetStationRequestableSongs(ctx context.Context, stationID string) ([]StationSongRequest, error) {
-	if strings.TrimSpace(stationID) == "" {
-		return nil, errors.New("azurecast: stationID must not be empty")
+	if err := validateStationID(stationID); err != nil {
+		return nil, err
 	}
 	var payload []StationSongRequest
-	err := c.request(ctx, http.MethodGet,
-		"/api/station/"+url.PathEscape(stationID)+"/requests",
-		nil, &payload)
+	err := c.request(ctx, http.MethodGet, "station/"+url.PathEscape(stationID)+"/requests", nil, &payload)
 	return payload, err
 }
 
 // RequestStationSong requests a song to be played on the given station.
 func (c *Client) RequestStationSong(ctx context.Context, stationID string, requestID StationSongRequest) (response StandardResponse, err error) {
-	if strings.TrimSpace(stationID) == "" {
-		return StandardResponse{}, errors.New("azurecast: stationID must not be empty")
+	if err := validateStationID(stationID); err != nil {
+		return StandardResponse{}, err
 	}
-	err = c.request(ctx, http.MethodPost,
-		"/api/station/"+url.PathEscape(stationID)+"/request/"+url.PathEscape(requestID.RequestID),
-		nil, &response)
+	err = c.request(ctx, http.MethodPost, "station/"+url.PathEscape(stationID)+"/request/"+url.PathEscape(requestID.RequestID), nil, &response)
 	return
 }

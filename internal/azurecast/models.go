@@ -1,5 +1,13 @@
 package azurecast
 
+// StandardResponse represents a standard response from AzuraCast API.
+type StandardResponse struct {
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
+	FormattedMessage string `json:"formatted_message"`
+}
+
+// NowPlaying represents the now playing information for a station from AzuraCast API.
 type NowPlaying struct {
 	Station struct {
 		ID              int    `json:"id"`
@@ -123,6 +131,7 @@ type NowPlaying struct {
 	Cache    string `json:"cache"`
 }
 
+// Stations represents a radio station from AzuraCast API.
 type Stations struct {
 	ID              int    `json:"id"`
 	Name            string `json:"name"`
@@ -159,6 +168,7 @@ type Stations struct {
 	HlsListeners int           `json:"hls_listeners"`
 }
 
+// StationSongRequest represents a requestable song on a station from AzuraCast API.
 type StationSongRequest struct {
 	RequestID  string `json:"request_id"`
 	RequestURL string `json:"request_url"`
