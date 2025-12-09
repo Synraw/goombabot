@@ -372,7 +372,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+requestedSong.Song.Title+"** by **"+requestedSong.Song.Artist+"**."))
+	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+requestedSong.Song.Text+"** by **"+requestedSong.Song.Artist+"**."))
 	deleteMessageAfter(s, i, shortDelay)
 }
 
