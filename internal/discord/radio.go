@@ -357,10 +357,13 @@ type streamStats struct {
 
 // fillInitialBuffer fills the buffer to initialBufferSize before starting playback
 func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, packets <-chan []byte, errChan <-chan error) error {
+	fillCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	for len(*ringBuffer) < initialBufferSize {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-fillCtx.Done():
+			return fmt.Errorf("initial buffer fill timeout: got %d/%d packets", len(*ringBuffer), initialBufferSize)
 		case pkt, ok := <-packets:
 			if !ok {
 				return ErrBufferNotFilled
@@ -370,7 +373,7 @@ func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, pac
 			return err
 		}
 	}
-	//bot.Logger.Info("initial buffer filled", "size", len(*ringBuffer))
+	bot.Logger.Debug("initial buffer filled", "size", len(*ringBuffer))
 	return nil
 }
 
@@ -399,7 +402,6 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 				"opusSendChanLen", len(vc.OpusSend))
 		}
 
-		// Increase timeout threshold before giving up
 		if stats.sendTimeouts >= 100 {
 			bot.Logger.Error("opus channel consistently blocked, likely disconnected",
 				"timeouts", stats.sendTimeouts,
