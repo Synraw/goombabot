@@ -376,6 +376,7 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 	case vc.OpusSend <- packet:
 		stats.totalPacketsSent++
 		stats.sendTimeouts = 0
+		return nil
 
 	case <-time.After(opusSendTimeout):
 		stats.sendTimeouts++
@@ -383,17 +384,23 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 			bot.Logger.Warn("opus send timeout",
 				"bufferLen", len(*ringBuffer),
 				"timeouts", stats.sendTimeouts,
-				"totalSent", stats.totalPacketsSent)
+				"totalSent", stats.totalPacketsSent,
+				"opusSendChanLen", len(vc.OpusSend))
 		}
-		if stats.sendTimeouts >= maxSendTimeouts {
-			stats.sendTimeouts = 0 // Reset to avoid stopping
+
+		// Increase timeout threshold before giving up
+		if stats.sendTimeouts >= 100 {
+			bot.Logger.Error("opus channel consistently blocked, likely disconnected",
+				"timeouts", stats.sendTimeouts,
+				"opusChanLen", len(vc.OpusSend))
+			return errors.New("opus send channel blocked")
 		}
+		stats.sendTimeouts = 0 // Reset to allow continued attempts
+		return nil
 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-
-	return nil
 }
 
 // logStreamStats logs final streaming statistics
