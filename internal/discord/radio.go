@@ -17,233 +17,412 @@ import (
 )
 
 const (
-	packetBufferSize   = 2000
-	initialBufferSize  = 150
-	maxBufferSize      = 400
-	tickInterval       = 20 * time.Millisecond
-	opusSendTimeout    = 500 * time.Millisecond
-	maxInvalidOggPages = 10
-	maxSendTimeouts    = 50 // new: cap consecutive send timeouts before reset
+	packetBufferSize    = 2000
+	initialBufferSize   = 150
+	maxBufferSize       = 400
+	tickInterval        = 20 * time.Millisecond
+	opusSendTimeout     = 500 * time.Millisecond
+	maxInvalidOggPages  = 10
+	maxSendTimeouts     = 50
+	maxConsecutiveEmpty = 50 // 1 second of empty ticks
+
+	// Ogg constants
+	oggMagicNumber = "OggS"
+	oggHeaderSize  = 27
+	oggMagicOffset = 4
+
+	// Opus constants
+	opusHeadSignature = "OpusHead"
+	opusTagsSignature = "OpusTags"
+	minOpusPacketSize = 1
+	opusSignatureSize = 8
+
+	// FFmpeg constants
+	ffmpegBinary        = "ffmpeg"
+	ffmpegWindowsBinary = ".\\ffmpeg.exe"
+	sampleRate          = 48000
+	channels            = 2
+	bitrate             = "128k"
+	frameDuration       = "20"
+	bufferSize          = "256k"
+	maxMuxingQueueSize  = 1024
+
+	// HTTP streaming constants
+	httpReadBufferSize  = 256 * 1024
+	httpWriteBufferSize = 256 * 1024
+	httpIdleTimeout     = 90 * time.Second
+	httpDialTimeout     = 10 * time.Second
+	httpKeepAlive       = 30 * time.Second
+	oggReaderBufferSize = 128 * 1024
+
+	contentTypeOgg      = "application/ogg"
+	contentTypeAudioOgg = "audio/ogg"
 )
+
+var (
+	ErrInvalidOggHeader    = errors.New("invalid ogg page header")
+	ErrTooManyInvalidPages = errors.New("too many invalid ogg pages")
+	ErrSegmentOverflow     = errors.New("segment overflow in ogg page")
+	ErrBufferStarvation    = errors.New("buffer starvation detected")
+	ErrStreamEnded         = errors.New("stream ended unexpectedly")
+	ErrInvalidContentType  = errors.New("stream is not in Ogg/Opus format")
+	ErrBufferNotFilled     = errors.New("stream exited before buffer filled")
+)
+
+// isOpusMetadataPacket checks if a packet is OpusHead or OpusTags
+func isOpusMetadataPacket(packet []byte) bool {
+	if len(packet) < opusSignatureSize {
+		return false
+	}
+	sig := string(packet[:opusSignatureSize])
+	return sig == opusHeadSignature || sig == opusTagsSignature
+}
+
+// isValidOpusPacket validates an Opus packet
+func isValidOpusPacket(packet []byte) bool {
+	return len(packet) >= minOpusPacketSize && !isOpusMetadataPacket(packet)
+}
 
 // parseOggOpusStream reads Ogg pages from a reader and sends Opus packets to a channel.
 func (bot *Bot) parseOggOpusStream(ctx context.Context, reader *bufio.Reader, packets chan<- []byte, errChan chan<- error) {
 	defer close(packets)
+
 	var pending []byte
 	invalidPacketCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
+			bot.Logger.Debug("parseOggOpusStream context cancelled")
 			return
 		default:
 		}
-		header := make([]byte, 27)
+
+		// Read Ogg page header
+		header := make([]byte, oggHeaderSize)
 		if _, err := io.ReadFull(reader, header); err != nil {
+			// Don't log as error if context was cancelled
+			if ctx.Err() != nil {
+				bot.Logger.Debug("ogg read cancelled", "reason", ctx.Err())
+				return
+			}
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				bot.Logger.Error("ogg read header error", "err", err, "headerData", hex.EncodeToString(header))
 				select {
 				case errChan <- fmt.Errorf("ogg header read failed: %w", err):
-				default:
+				case <-ctx.Done():
 				}
+			} else {
+				bot.Logger.Debug("ogg stream ended", "err", err)
 			}
 			return
 		}
-		if string(header[0:4]) != "OggS" {
+
+		// Validate Ogg magic number
+		if string(header[0:oggMagicOffset]) != oggMagicNumber {
 			invalidPacketCount++
 			if invalidPacketCount > maxInvalidOggPages {
 				bot.Logger.Error("too many invalid Ogg pages, aborting")
+				select {
+				case errChan <- ErrTooManyInvalidPages:
+				case <-ctx.Done():
+				}
 				return
 			}
-			bot.Logger.Warn("invalid ogg page, skipping")
+			bot.Logger.Warn("invalid ogg page, skipping", "invalidCount", invalidPacketCount)
 			continue
 		}
-		invalidPacketCount = 0 // Reset on valid header
+		invalidPacketCount = 0
 
+		// Read segment table
 		segCount := int(header[26])
 		lacingVals := make([]byte, segCount)
 		if _, err := io.ReadFull(reader, lacingVals); err != nil {
-			bot.Logger.Error("ogg read lacing error", "err", err)
+			if ctx.Err() != nil {
+				bot.Logger.Debug("lacing read cancelled", "reason", ctx.Err())
+				return
+			}
+			bot.Logger.Error("ogg read lacing error", "err", err, "segmentCount", segCount)
+			select {
+			case errChan <- fmt.Errorf("lacing read failed: %w", err):
+			case <-ctx.Done():
+			}
 			return
 		}
+
+		// Calculate page size
 		pageSize := 0
 		for _, v := range lacingVals {
 			pageSize += int(v)
 		}
+
+		// Read page data
 		pageData := make([]byte, pageSize)
 		if _, err := io.ReadFull(reader, pageData); err != nil {
-			bot.Logger.Error("ogg read page data error", "err", err)
+			if ctx.Err() != nil {
+				bot.Logger.Debug("page data read cancelled", "reason", ctx.Err())
+				return
+			}
+			bot.Logger.Error("ogg read page data error", "err", err, "expectedSize", pageSize)
+			select {
+			case errChan <- fmt.Errorf("page data read failed: %w", err):
+			case <-ctx.Done():
+			}
 			return
 		}
-		offset := 0
-		for _, lv := range lacingVals {
-			size := int(lv)
-			if size == 0 {
+
+		// Process segments
+		if err := bot.processOggSegments(ctx, lacingVals, pageData, &pending, packets); err != nil {
+			if err == ErrSegmentOverflow {
+				bot.Logger.Warn("segment overflow, skipping rest of page")
 				continue
 			}
-			if offset+size > len(pageData) {
-				bot.Logger.Warn("segment overflow, skipping rest of page")
-				break
+			if ctx.Err() != nil {
+				bot.Logger.Debug("segment processing cancelled")
+				return
 			}
-			seg := pageData[offset : offset+size]
-			offset += size
-			pending = append(pending, seg...)
-			if size < 255 {
-				packet := pending
-				pending = nil
-				if len(packet) >= 8 {
-					if string(packet[:8]) == "OpusHead" || string(packet[:8]) == "OpusTags" {
-						continue
-					}
-				}
-				// Validate Opus packet - minimum size is 1 byte
-				if len(packet) == 0 {
-					bot.Logger.Warn("empty opus packet, skipping")
-					continue
-				}
-				frame := make([]byte, len(packet))
-				copy(frame, packet)
-				select {
-				case packets <- frame:
-				case <-ctx.Done():
-					return
-				case <-time.After(100 * time.Millisecond):
-					// If channel is full for 100ms, log it but keep trying
-					bot.Logger.Warn("packet channel congestion", "channelLen", len(packets))
-					select {
-					case packets <- frame:
-					case <-ctx.Done():
-						return
-					}
-				}
+			select {
+			case errChan <- err:
+			case <-ctx.Done():
 			}
+			return
+		}
+	}
+}
+
+// processOggSegments extracts Opus packets from Ogg page segments
+func (bot *Bot) processOggSegments(ctx context.Context, lacingVals, pageData []byte, pending *[]byte, packets chan<- []byte) error {
+	offset := 0
+	for _, lv := range lacingVals {
+		size := int(lv)
+		if size == 0 {
+			continue
+		}
+
+		if offset+size > len(pageData) {
+			return ErrSegmentOverflow
+		}
+
+		seg := pageData[offset : offset+size]
+		offset += size
+		*pending = append(*pending, seg...)
+
+		// Packet is complete when segment size < 255
+		if size < 255 {
+			packet := *pending
+			*pending = nil
+
+			// Skip metadata packets and validate
+			if !isValidOpusPacket(packet) {
+				if len(packet) > 0 {
+					bot.Logger.Debug("skipping non-audio packet", "size", len(packet))
+				}
+				continue
+			}
+
+			// Send packet (make copy to avoid data races)
+			frame := make([]byte, len(packet))
+			copy(frame, packet)
+
+			if err := bot.sendPacketWithTimeout(ctx, packets, frame, 100*time.Millisecond); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// sendPacketWithTimeout sends a packet with timeout and congestion handling
+func (bot *Bot) sendPacketWithTimeout(ctx context.Context, packets chan<- []byte, frame []byte, timeout time.Duration) error {
+	select {
+	case packets <- frame:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(timeout):
+		bot.Logger.Warn("packet channel congestion", "channelLen", len(packets), "channelCap", cap(packets))
+		// Try one more time after warning
+		select {
+		case packets <- frame:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
 
 // sendOpusPackets handles buffering and sending Opus packets to Discord.
 func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSession, packets <-chan []byte, errChan <-chan error) error {
-	// Use a ring buffer for continuous buffering
 	ringBuffer := make([][]byte, 0, maxBufferSize)
 
 	// Fill initial buffer
-	for len(ringBuffer) < initialBufferSize {
-		select {
-		case <-session.Context.Done():
-			return nil
-		case pkt, ok := <-packets:
-			if !ok {
-				return errors.New("stream exited before buffer filled")
-			}
-			ringBuffer = append(ringBuffer, pkt)
-		case err := <-errChan:
-			return err
-		}
+	if err := bot.fillInitialBuffer(session.Context, &ringBuffer, packets, errChan); err != nil {
+		bot.Logger.Debug("initial buffer fill failed", "err", err)
+		return err
 	}
 
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	consecutiveEmptyCount := 0
-	maxConsecutiveEmpty := 50 // 1 second of empty ticks
-	consecutiveSendTimeouts := 0
+	var stats streamStats
+	consecutiveEmpty := 0
 
 	for {
 		select {
 		case <-session.Context.Done():
+			bot.Logger.Debug("sendOpusPackets context cancelled")
+			bot.logStreamStats(&stats)
 			return nil
+
 		case err := <-errChan:
+			// Check if this is due to context cancellation
+			if session.Context.Err() != nil {
+				bot.Logger.Debug("error received after context cancelled", "err", err)
+				bot.logStreamStats(&stats)
+				return nil
+			}
+			bot.Logger.Error("stream error received", "err", err)
+			bot.logStreamStats(&stats)
 			return err
+
 		case pkt, ok := <-packets:
 			if !ok {
-				bot.Logger.Warn("packet channel closed")
-				return errors.New("stream ended unexpectedly")
+				// Check if context was cancelled
+				if session.Context.Err() != nil {
+					bot.Logger.Debug("packet channel closed due to context cancellation")
+					bot.logStreamStats(&stats)
+					return nil
+				}
+				bot.Logger.Warn("packet channel closed unexpectedly")
+				bot.logStreamStats(&stats)
+				return ErrStreamEnded
 			}
-			ringBuffer = append(ringBuffer, pkt)
 
-			// Drop excess if buffer gets too large
+			ringBuffer = append(ringBuffer, pkt)
+			stats.totalPacketsReceived++
+
+			// Handle buffer overflow
 			if len(ringBuffer) > maxBufferSize {
 				dropCount := len(ringBuffer) - maxBufferSize
-				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount)
+				stats.packetsDropped += dropCount
+				bot.Logger.Warn("ring buffer overflow", "dropping", dropCount, "totalDropped", stats.packetsDropped)
 				ringBuffer = ringBuffer[dropCount:]
 			}
 
 		case <-ticker.C:
-			if len(ringBuffer) > 0 {
-				packet := ringBuffer[0]
-				ringBuffer = ringBuffer[1:] // Always remove, even if empty
-
-				if len(packet) > 0 {
-					select {
-					case vc.OpusSend <- packet:
-						consecutiveEmptyCount = 0
-						consecutiveSendTimeouts = 0
-					case <-time.After(opusSendTimeout):
-						consecutiveSendTimeouts++
-						if consecutiveSendTimeouts == 1 || consecutiveSendTimeouts%10 == 0 {
-							bot.Logger.Warn("opus send timeout", "bufferLen", len(ringBuffer), "timeouts", consecutiveSendTimeouts)
-						}
-						if consecutiveSendTimeouts >= maxSendTimeouts {
-							// reset counter to avoid stopping the stream; drop the packet
-							consecutiveSendTimeouts = 0
-						}
-						// drop this packet and continue
-					case <-session.Context.Done():
+			if len(ringBuffer) == 0 {
+				consecutiveEmpty++
+				if consecutiveEmpty >= maxConsecutiveEmpty {
+					// Check if context was cancelled first
+					if session.Context.Err() != nil {
+						bot.Logger.Debug("buffer empty due to context cancellation")
+						bot.logStreamStats(&stats)
 						return nil
 					}
+					bot.Logger.Error("buffer starved", "count", consecutiveEmpty)
+					bot.logStreamStats(&stats)
+					return ErrBufferStarvation
 				}
-			} else {
-				consecutiveEmptyCount++
-				if consecutiveEmptyCount >= maxConsecutiveEmpty {
-					bot.Logger.Error("buffer starved", "count", consecutiveEmptyCount)
-					return errors.New("buffer starvation detected")
+				continue
+			}
+			consecutiveEmpty = 0
+
+			if err := bot.sendNextPacket(vc, session.Context, &ringBuffer, &stats); err != nil {
+				if err == context.Canceled || err == context.DeadlineExceeded {
+					bot.Logger.Debug("sendNextPacket cancelled", "err", err)
+					bot.logStreamStats(&stats)
+					return nil
 				}
+				return err
 			}
 		}
 	}
 }
 
+// streamStats tracks streaming metrics
+type streamStats struct {
+	totalPacketsReceived int
+	totalPacketsSent     int
+	packetsDropped       int
+	sendTimeouts         int
+	bufferStarvations    int
+}
+
+// fillInitialBuffer fills the buffer to initialBufferSize before starting playback
+func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, packets <-chan []byte, errChan <-chan error) error {
+	for len(*ringBuffer) < initialBufferSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case pkt, ok := <-packets:
+			if !ok {
+				return ErrBufferNotFilled
+			}
+			*ringBuffer = append(*ringBuffer, pkt)
+		case err := <-errChan:
+			return err
+		}
+	}
+	bot.Logger.Info("initial buffer filled", "size", len(*ringBuffer))
+	return nil
+}
+
+// sendNextPacket sends the next packet from the buffer to Discord
+func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Context, ringBuffer *[][]byte, stats *streamStats) error {
+	packet := (*ringBuffer)[0]
+	*ringBuffer = (*ringBuffer)[1:]
+
+	if len(packet) == 0 {
+		return nil
+	}
+
+	select {
+	case vc.OpusSend <- packet:
+		stats.totalPacketsSent++
+		stats.sendTimeouts = 0
+
+	case <-time.After(opusSendTimeout):
+		stats.sendTimeouts++
+		if stats.sendTimeouts == 1 || stats.sendTimeouts%10 == 0 {
+			bot.Logger.Warn("opus send timeout",
+				"bufferLen", len(*ringBuffer),
+				"timeouts", stats.sendTimeouts,
+				"totalSent", stats.totalPacketsSent)
+		}
+		if stats.sendTimeouts >= maxSendTimeouts {
+			stats.sendTimeouts = 0 // Reset to avoid stopping
+		}
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
+}
+
+// logStreamStats logs final streaming statistics
+func (bot *Bot) logStreamStats(stats *streamStats) {
+	bot.Logger.Info("stream ended",
+		"packetsReceived", stats.totalPacketsReceived,
+		"packetsSent", stats.totalPacketsSent,
+		"packetsDropped", stats.packetsDropped,
+		"finalTimeouts", stats.sendTimeouts)
+}
+
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
 func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *StreamSession) error {
-	ffmpegFilename := "ffmpeg"
-	if runtime.GOOS == "windows" {
-		ffmpegFilename = ".\\ffmpeg.exe"
-	}
-	ffmpegPath, err := exec.LookPath(ffmpegFilename)
+	cmd, err := bot.buildFFmpegCommand(session)
 	if err != nil {
-		return err
+		return fmt.Errorf("build ffmpeg command: %w", err)
 	}
-	cmd := exec.CommandContext(session.Context, ffmpegPath,
-		"-re",                           // Read input at native frame rate
-		"-i", session.Station.StreamURL, // Input URL
-		"-reconnect", "1", // Enable reconnection
-		"-reconnect_streamed", "1", // Reconnect for streamed files
-		"-reconnect_delay_max", "5", // Max delay of 5 seconds
-		"-fflags", "+genpts+igndts", // Generate PTS and ignore DTS discontinuities
-		"-avoid_negative_ts", "make_zero", // Handle negative timestamps
-		"-max_delay", "5000000", // 5 seconds max delay
-		"-vn",      // No video
-		"-ac", "2", // 2 audio channels
-		"-ar", "48000", // 48kHz sample rate
-		"-c:a", "libopus", // Encode to Opus
-		"-b:a", "128k", // 128kbps bitrate
-		"-frame_duration", "20", // 20ms frames
-		"-application", "audio", // Audio application
-		"-vbr", "off", // Disable VBR for consistent quality
-		"-compression_level", "10", // Maximum quality (0-10)
-		"-bufsize", "256k", // Buffer size
-		"-max_muxing_queue_size", "1024", // Increase muxing queue size
-		"-f", "ogg", // Output format Ogg
-		"pipe:1", // Output to stdout
-	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("create stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("start ffmpeg: %w", err)
 	}
 	defer func() {
 		if cmd.Process != nil {
@@ -254,37 +433,60 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
-	reader := bufio.NewReader(stdout)
-	packets := make(chan []byte, packetBufferSize)
-	errChan := make(chan error, 1)
+	return bot.processStream(vc, session, bufio.NewReader(stdout))
+}
 
-	go bot.parseOggOpusStream(session.Context, reader, packets, errChan)
+// buildFFmpegCommand constructs the ffmpeg command with all arguments
+func (bot *Bot) buildFFmpegCommand(session *StreamSession) (*exec.Cmd, error) {
+	ffmpegFilename := ffmpegBinary
+	if runtime.GOOS == "windows" {
+		ffmpegFilename = ffmpegWindowsBinary
+	}
 
-	return bot.sendOpusPackets(vc, session, packets, errChan)
+	ffmpegPath, err := exec.LookPath(ffmpegFilename)
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", err)
+	}
+
+	args := []string{
+		"-re",
+		"-i", session.Station.StreamURL,
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
+		"-fflags", "+genpts+igndts",
+		"-avoid_negative_ts", "make_zero",
+		"-max_delay", "5000000",
+		"-vn",
+		"-ac", fmt.Sprintf("%d", channels),
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-c:a", "libopus",
+		"-b:a", bitrate,
+		"-frame_duration", frameDuration,
+		"-application", "audio",
+		"-vbr", "off",
+		"-compression_level", "10",
+		"-bufsize", bufferSize,
+		"-max_muxing_queue_size", fmt.Sprintf("%d", maxMuxingQueueSize),
+		"-f", "ogg",
+		"pipe:1",
+	}
+
+	return exec.CommandContext(session.Context, ffmpegPath, args...), nil
 }
 
 // streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
 func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
-	client := &http.Client{
-		Timeout: 0, // No timeout for streaming connections
-		Transport: &http.Transport{
-			ReadBufferSize:        256 * 1024,
-			WriteBufferSize:       256 * 1024,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		},
-	}
+	client := bot.createHTTPClient()
 
-	req, err := http.NewRequestWithContext(session.Context, "GET", session.Station.StreamURL, nil)
+	req, err := http.NewRequestWithContext(session.Context, http.MethodGet, session.Station.StreamURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -292,24 +494,44 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 		return fmt.Errorf("http error: %d %s", resp.StatusCode, resp.Status)
 	}
 
-	// Verify content type is Ogg/Opus
+	// Verify content type
 	contentType := resp.Header.Get("Content-Type")
-	if contentType != "application/ogg" && contentType != "audio/ogg" {
+	if contentType != contentTypeOgg && contentType != contentTypeAudioOgg {
 		bot.Logger.Warn("stream content type is not Ogg/Opus", "contentType", contentType)
-		return errors.New("stream is not in Ogg/Opus format")
+		return ErrInvalidContentType
 	}
 
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
-	// Create buffered reader with increased buffer size
-	reader := bufio.NewReaderSize(resp.Body, 128*1024)
+	reader := bufio.NewReaderSize(resp.Body, oggReaderBufferSize)
+	return bot.processStream(vc, session, reader)
+}
+
+// createHTTPClient creates an HTTP client optimized for streaming
+func (bot *Bot) createHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			ReadBufferSize:        httpReadBufferSize,
+			WriteBufferSize:       httpWriteBufferSize,
+			IdleConnTimeout:       httpIdleTimeout,
+			TLSHandshakeTimeout:   httpDialTimeout,
+			ResponseHeaderTimeout: httpDialTimeout,
+			DialContext: (&net.Dialer{
+				Timeout:   httpDialTimeout,
+				KeepAlive: httpKeepAlive,
+			}).DialContext,
+		},
+	}
+}
+
+// processStream is a common handler for both ffmpeg and direct streaming
+func (bot *Bot) processStream(vc *discordgo.VoiceConnection, session *StreamSession, reader *bufio.Reader) error {
 	packets := make(chan []byte, packetBufferSize)
 	errChan := make(chan error, 1)
 
-	// Parse Ogg/Opus stream
 	go bot.parseOggOpusStream(session.Context, reader, packets, errChan)
 
-	// Send Opus packets to Discord
 	return bot.sendOpusPackets(vc, session, packets, errChan)
 }
