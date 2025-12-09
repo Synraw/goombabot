@@ -341,7 +341,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 	matchingSongs := map[string]azurecast.StationSongRequest{}
 	songNameLower := strings.ToLower(songName)
 	for i := range requestableSongs {
-		if strings.Contains(strings.ToLower(requestableSongs[i].Song.Title), songNameLower) {
+		if strings.Contains(strings.ToLower(requestableSongs[i].Song.Text), songNameLower) {
 			matchingSongs[requestableSongs[i].RequestID] = requestableSongs[i]
 		}
 	}
