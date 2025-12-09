@@ -14,8 +14,8 @@ import (
 
 const (
 	apiKeyHeader     = "X-API-Key"
-	defaultUserAgent = "goombabot-azurecast-client"
-	maxErrorBody     = 4 << 10 // 4KiB
+	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0" // azuracast use devicedetector, so we mimic a real browser
+	maxErrorBody     = 4 << 10                                                                                                                         // 4KiB
 )
 
 // Option configures a Client instance.
