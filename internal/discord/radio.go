@@ -214,9 +214,6 @@ func (bot *Bot) processOggSegments(ctx context.Context, lacingVals, pageData []b
 
 			// Skip metadata packets and validate
 			if !isValidOpusPacket(packet) {
-				if len(packet) > 0 {
-					bot.Logger.Debug("skipping non-audio packet", "size", len(packet))
-				}
 				continue
 			}
 
@@ -345,7 +342,6 @@ type streamStats struct {
 	totalPacketsSent     int
 	packetsDropped       int
 	sendTimeouts         int
-	bufferStarvations    int
 }
 
 // fillInitialBuffer fills the buffer to initialBufferSize before starting playback
@@ -363,7 +359,7 @@ func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, pac
 			return err
 		}
 	}
-	bot.Logger.Info("initial buffer filled", "size", len(*ringBuffer))
+	//bot.Logger.Info("initial buffer filled", "size", len(*ringBuffer))
 	return nil
 }
 
