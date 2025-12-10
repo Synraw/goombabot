@@ -373,12 +373,15 @@ func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, pac
 			return err
 		}
 	}
-	bot.Logger.Debug("initial buffer filled", "size", len(*ringBuffer))
 	return nil
 }
 
 // sendNextPacket sends the next packet from the buffer to Discord
 func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Context, ringBuffer *[][]byte, stats *streamStats) error {
+	if vc == nil || !vc.Ready {
+		return errors.New("voice connection not ready")
+	}
+
 	packet := (*ringBuffer)[0]
 	*ringBuffer = (*ringBuffer)[1:]
 
