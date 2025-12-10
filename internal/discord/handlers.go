@@ -407,7 +407,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 			break
 		}
 		songSelect.Options = append(songSelect.Options, discordgo.SelectMenuOption{
-			Label: truncateLabel(song.Song.Text),
+			Label: truncateLabel(song.Song.Title + " by " + song.Song.Artist),
 			Value: requestID,
 		})
 		count++
