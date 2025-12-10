@@ -62,6 +62,25 @@ func (bot *Bot) respondWithError(s *discordgo.Session, i *discordgo.InteractionC
 	deleteMessageAfter(s, i, delay)
 }
 
+// requestSong handles the process of requesting a song on the radio station.
+func (bot *Bot) requestSong(s *discordgo.Session, i *discordgo.InteractionCreate, song azurecast.StationSongRequest, stationID int) {
+	// Request the song
+	response, err := bot.azureApiClient.RequestStationSong(context.Background(), strconv.Itoa(stationID), song)
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to request the song.", err, shortDelay)
+		return
+	}
+
+	// Check response success
+	if !response.Success {
+		bot.respondWithError(s, i, "Failed to request the song: "+response.Message, nil, shortDelay)
+		return
+	}
+
+	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+song.Song.Text+"**."))
+	deleteMessageAfter(s, i, time.Second*10)
+}
+
 // runRadioStream handles the process of joining voice and streaming the radio.
 func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
 	guild, err := s.State.Guild(i.GuildID)
@@ -352,28 +371,53 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 
-	// TODO: Actually ask user if multiple matches found
-	var requestedSong *azurecast.StationSongRequest
-	for _, song := range matchingSongs {
-		requestedSong = &song
-		break
-	}
-
-	// Request the song
-	response, err := bot.azureApiClient.RequestStationSong(context.Background(), strconv.Itoa(session.Station.ID), *requestedSong)
-	if err != nil {
-		bot.respondWithError(s, i, "Failed to request the song.", err, shortDelay)
+	// If only one match, request it directly
+	if len(matchingSongs) == 1 {
+		for _, song := range matchingSongs {
+			bot.requestSong(s, i, song, session.Station.ID)
+		}
 		return
 	}
 
-	// Check response success
-	if !response.Success {
-		bot.respondWithError(s, i, "Failed to request the song: "+response.Message, nil, shortDelay)
-		return
+	// Multiple matches - ask user to select
+	minValues := 1
+	songSelect := discordgo.SelectMenu{
+		CustomID:    "song_request_select",
+		Placeholder: "Select a song to request",
+		MinValues:   &minValues,
+		MaxValues:   1,
+		Options:     []discordgo.SelectMenuOption{}, // start empty
 	}
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+requestedSong.Song.Text+"**."))
-	deleteMessageAfter(s, i, time.Second*10)
+	// Populate options (limit to 25 options due to Discord API limits)
+	count := 0
+	for requestID, song := range matchingSongs {
+		if count >= 25 {
+			break
+		}
+		songSelect.Options = append(songSelect.Options, discordgo.SelectMenuOption{
+			Label: song.Song.Text,
+			Value: requestID,
+		})
+		count++
+	}
+
+	// send the select menu as a response
+	resp := &discordgo.InteractionResponseData{
+		Content: "Multiple songs found. Please select one:",
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					songSelect,
+				},
+			},
+		},
+		Flags: discordgo.MessageFlagsEphemeral,
+	}
+
+	if err := s.InteractionRespond(i.Interaction, createResponseEx(resp)); err != nil {
+		bot.Logger.Warn("failed to send song select", "err", err)
+	}
 }
 
 // handleComponent routes interaction component events to the appropriate handler.
@@ -381,6 +425,8 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 	switch i.MessageComponentData().CustomID {
 	case "radio_station_select":
 		bot.handleRadioSelect(s, i)
+	case "song_request_select":
+		bot.handleSongRequestSelect(s, i)
 	}
 }
 
@@ -408,4 +454,63 @@ func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.Interaction
 	station := bot.radioStations[stationID]
 
 	bot.runRadioStream(s, i, station)
+}
+
+// handleSongRequestSelect processes the song selection and requests it.
+func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	values := i.MessageComponentData().Values
+	if len(values) == 0 {
+		_ = s.InteractionRespond(i.Interaction, createResponse("No song selected."))
+		deleteMessageAfter(s, i, shortDelay)
+		return
+	}
+
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		return
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
+		return
+	}
+
+	// get current session
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
+		return
+	}
+
+	requestID := values[0]
+
+	// Get requestable songs to find the selected one
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(session.Station.ID))
+	if err != nil {
+		bot.respondWithError(s, i, "Failed to get requestable songs.", err, shortDelay)
+		return
+	}
+
+	// Find the song with matching requestID
+	var selectedSong *azurecast.StationSongRequest
+	for idx := range requestableSongs {
+		if requestableSongs[idx].RequestID == requestID {
+			selectedSong = &requestableSongs[idx]
+			break
+		}
+	}
+
+	if selectedSong == nil {
+		bot.respondWithError(s, i, "Selected song not found.", nil, shortDelay)
+		return
+	}
+
+	bot.requestSong(s, i, *selectedSong, session.Station.ID)
 }
