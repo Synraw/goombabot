@@ -11,9 +11,20 @@ import (
 )
 
 const (
-	shortDelay = 5 * time.Second
-	longDelay  = 30 * time.Second
+	shortDelay  = 5 * time.Second
+	mediumDelay = 15 * time.Second
+	longDelay   = 30 * time.Second
+	maxLabelLen = 100
 )
+
+// truncateLabel ensures select option labels meet Discord's 1–100 char limit.
+func truncateLabel(label string) string {
+	r := []rune(label)
+	if len(r) <= maxLabelLen {
+		return label
+	}
+	return string(r[:maxLabelLen-1]) + "…"
+}
 
 // helper functions
 
@@ -78,7 +89,7 @@ func (bot *Bot) requestSong(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 
 	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+song.Song.Text+"**."))
-	deleteMessageAfter(s, i, time.Second*10)
+	deleteMessageAfter(s, i, mediumDelay)
 }
 
 // runRadioStream handles the process of joining voice and streaming the radio.
@@ -171,7 +182,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 	// Populate options
 	for id, station := range bot.radioStations {
 		stationSelect.Options = append(stationSelect.Options, discordgo.SelectMenuOption{
-			Label: station.Name,
+			Label: truncateLabel(station.Name),
 			Value: strconv.Itoa(id),
 		})
 	}
@@ -396,7 +407,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 			break
 		}
 		songSelect.Options = append(songSelect.Options, discordgo.SelectMenuOption{
-			Label: song.Song.Text,
+			Label: truncateLabel(song.Song.Text),
 			Value: requestID,
 		})
 		count++
