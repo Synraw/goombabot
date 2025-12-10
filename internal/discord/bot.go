@@ -236,11 +236,6 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 		return
 	}
 
-	bot.Logger.Debug("voice state update received",
-		"channelID", vs.ChannelID,
-		"guildID", vs.GuildID,
-		"hasActiveSession", bot.radioSessions[vs.GuildID] != nil)
-
 	if vs.ChannelID == "" {
 		// Verify bot is actually disconnected by checking voice connection
 		vc, hasVoiceConn := s.VoiceConnections[vs.GuildID]

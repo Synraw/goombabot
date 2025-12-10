@@ -353,6 +353,7 @@ type streamStats struct {
 	totalPacketsSent     int
 	packetsDropped       int
 	sendTimeouts         int
+	notReadyCount        int // consecutive not-ready ticks
 }
 
 // fillInitialBuffer fills the buffer to initialBufferSize before starting playback
@@ -378,9 +379,21 @@ func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, pac
 
 // sendNextPacket sends the next packet from the buffer to Discord
 func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Context, ringBuffer *[][]byte, stats *streamStats) error {
-	if vc == nil || !vc.Ready {
-		return errors.New("voice connection not ready")
+	if vc == nil {
+		return errors.New("voice connection nil")
 	}
+
+	// tolerate brief not-ready states; don't pop the buffer yet
+	if !vc.Ready {
+		stats.notReadyCount++
+		if stats.notReadyCount >= 50 { // ~1s at 20ms tickInterval
+			return errors.New("voice connection not ready")
+		}
+		return nil
+	}
+
+	// ready again; reset counter
+	stats.notReadyCount = 0
 
 	packet := (*ringBuffer)[0]
 	*ringBuffer = (*ringBuffer)[1:]
@@ -404,7 +417,6 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 				"totalSent", stats.totalPacketsSent,
 				"opusSendChanLen", len(vc.OpusSend))
 		}
-
 		if stats.sendTimeouts >= 100 {
 			bot.Logger.Error("opus channel consistently blocked, likely disconnected",
 				"timeouts", stats.sendTimeouts,
