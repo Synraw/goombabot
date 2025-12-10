@@ -386,7 +386,7 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 	// tolerate brief not-ready states; don't pop the buffer yet
 	if !vc.Ready {
 		stats.notReadyCount++
-		if stats.notReadyCount >= 50 { // ~1s at 20ms tickInterval
+		if stats.notReadyCount >= maxConsecutiveEmpty {
 			return errors.New("voice connection not ready")
 		}
 		return nil
