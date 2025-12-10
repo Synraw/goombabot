@@ -415,7 +415,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	// send the select menu as a response
 	resp := &discordgo.InteractionResponseData{
-		Content: "Multiple songs found. Please select one:",
+		Content: "Multiple songs found. Please select one (only showing the first 25):",
 		Components: []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
