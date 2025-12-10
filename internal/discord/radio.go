@@ -408,7 +408,6 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 				"opusChanLen", len(vc.OpusSend))
 			return errors.New("opus send channel blocked")
 		}
-		stats.sendTimeouts = 0 // Reset to allow continued attempts
 		return nil
 
 	case <-ctx.Done():
