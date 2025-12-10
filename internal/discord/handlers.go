@@ -136,12 +136,10 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		if station.IsOpus {
 			if err := bot.streamRadioDirectOpus(vc, bot.radioSessions[guild.ID]); err != nil {
 				bot.Logger.Error("streaming opus error", "err", err)
-				return
 			}
 		} else {
 			if err := bot.streamRadioWithFFmpeg(vc, bot.radioSessions[guild.ID]); err != nil {
 				bot.Logger.Error("streaming error", "err", err)
-				return
 			}
 		}
 		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
