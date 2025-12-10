@@ -16,3 +16,4 @@ features for whitelisted "moderator" users. This includes stuff like the ability
 - stop - stops the currently playing radio stream and disconnects the bot
 - skip - skip currently playing song on the radio (use creator auth for now so only player of bot can skip songs)
 - nowplaying - print the now playing song on the radio
+- request - request a song by name, search will show matches in a modal dialog
