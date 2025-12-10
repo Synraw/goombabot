@@ -491,7 +491,9 @@ func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.Inter
 
 	requestID := values[0]
 
-	// Get requestable songs to find the selected one
+	// Get requestable songs to find the selected one.
+	// We re-fetch here rather than caching from handleRequest to ensure we have
+	// the latest song list, as there may be a delay between showing the menu and selection.
 	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(session.Station.ID))
 	if err != nil {
 		bot.respondWithError(s, i, "Failed to get requestable songs.", err, shortDelay)
