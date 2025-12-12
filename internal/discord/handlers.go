@@ -134,11 +134,11 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		}()
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 		if station.IsOpus {
-			if err := bot.streamRadioDirectOpus(vc, bot.radioSessions[guild.ID]); err != nil {
+			if err := bot.streamRadioDirectOpus(vc, bot.radioSessions[guild.ID], guild.ID, voiceChannelID); err != nil {
 				bot.Logger.Error("streaming opus error", "err", err)
 			}
 		} else {
-			if err := bot.streamRadioWithFFmpeg(vc, bot.radioSessions[guild.ID]); err != nil {
+			if err := bot.streamRadioWithFFmpeg(vc, bot.radioSessions[guild.ID], guild.ID, voiceChannelID); err != nil {
 				bot.Logger.Error("streaming error", "err", err)
 			}
 		}

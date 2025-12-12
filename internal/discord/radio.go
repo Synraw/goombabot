@@ -58,6 +58,11 @@ const (
 	// Content types
 	contentTypeOgg      = "application/ogg"
 	contentTypeAudioOgg = "audio/ogg"
+
+	// Voice connection constants
+	voiceReconnectAttempts = 3
+	voiceReconnectDelay    = 2 * time.Second
+	voiceNotReadyTimeout   = 30 * time.Second // Consider connection lost if not ready for this long
 )
 
 var (
@@ -250,7 +255,7 @@ func (bot *Bot) sendPacketWithTimeout(ctx context.Context, packets chan<- []byte
 }
 
 // sendOpusPackets handles buffering and sending Opus packets to Discord.
-func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSession, packets <-chan []byte, errChan <-chan error) error {
+func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSession, packets <-chan []byte, errChan <-chan error, guildID, channelID string) error {
 	ringBuffer := make([][]byte, 0, maxBufferSize)
 
 	// Fill initial buffer
@@ -335,7 +340,8 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			}
 			consecutiveEmpty = 0
 
-			if err := bot.sendNextPacket(vc, session.Context, &ringBuffer, &stats); err != nil {
+			// Pass vc as pointer so it can be updated during reconnection
+			if err := bot.sendNextPacket(&vc, session.Context, &ringBuffer, &stats, session, guildID, channelID); err != nil {
 				if err == context.Canceled || err == context.DeadlineExceeded {
 					bot.Logger.Debug("sendNextPacket cancelled", "err", err)
 					bot.logStreamStats(&stats)
@@ -353,7 +359,7 @@ type streamStats struct {
 	totalPacketsSent     int
 	packetsDropped       int
 	sendTimeouts         int
-	notReadyCount        int // consecutive not-ready ticks
+	notReadyCount        int
 }
 
 // fillInitialBuffer fills the buffer to initialBufferSize before starting playback
@@ -378,21 +384,47 @@ func (bot *Bot) fillInitialBuffer(ctx context.Context, ringBuffer *[][]byte, pac
 }
 
 // sendNextPacket sends the next packet from the buffer to Discord
-func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Context, ringBuffer *[][]byte, stats *streamStats) error {
-	if vc == nil {
+func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Context, ringBuffer *[][]byte, stats *streamStats, session *StreamSession, guildID, channelID string) error {
+	if *vc == nil {
 		return errors.New("voice connection nil")
 	}
 
-	// tolerate brief not-ready states; don't pop the buffer yet
-	if !vc.Ready {
+	// If the voice connection is not ready, attempt reconnection after timeout
+	if !(*vc).Ready {
 		stats.notReadyCount++
-		if stats.notReadyCount >= maxConsecutiveEmpty {
-			return errors.New("voice connection not ready")
+
+		// Log periodically
+		if stats.notReadyCount%50 == 1 { // Log at 1, 51, 101, etc (every ~1 second)
+			bot.Logger.Info("voice not ready; waiting to resume",
+				"waitTicks", stats.notReadyCount,
+				"bufferLen", len(*ringBuffer),
+				"totalSent", stats.totalPacketsSent)
 		}
+
+		// If not ready for too long, attempt reconnection
+		notReadyDuration := time.Duration(stats.notReadyCount) * tickInterval
+		if notReadyDuration >= voiceNotReadyTimeout {
+			bot.Logger.Warn("voice connection not ready for too long, attempting reconnection",
+				"duration", notReadyDuration,
+				"waitTicks", stats.notReadyCount)
+
+			newVC, err := bot.reconnectVoice(session, guildID, channelID)
+			if err != nil {
+				bot.Logger.Error("voice reconnection failed permanently", "err", err)
+				return fmt.Errorf("voice reconnection failed: %w", err)
+			}
+
+			// Successfully reconnected
+			*vc = newVC
+			(*vc).Speaking(true) // Resume speaking state
+			stats.notReadyCount = 0
+			bot.Logger.Info("voice connection restored, resuming playback")
+		}
+
 		return nil
 	}
 
-	// ready again; reset counter
+	// Ready again; reset counter
 	stats.notReadyCount = 0
 
 	packet := (*ringBuffer)[0]
@@ -403,7 +435,7 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 	}
 
 	select {
-	case vc.OpusSend <- packet:
+	case (*vc).OpusSend <- packet:
 		stats.totalPacketsSent++
 		stats.sendTimeouts = 0
 		return nil
@@ -415,12 +447,12 @@ func (bot *Bot) sendNextPacket(vc *discordgo.VoiceConnection, ctx context.Contex
 				"bufferLen", len(*ringBuffer),
 				"timeouts", stats.sendTimeouts,
 				"totalSent", stats.totalPacketsSent,
-				"opusSendChanLen", len(vc.OpusSend))
+				"opusSendChanLen", len((*vc).OpusSend))
 		}
 		if stats.sendTimeouts >= 100 {
 			bot.Logger.Error("opus channel consistently blocked, likely disconnected",
 				"timeouts", stats.sendTimeouts,
-				"opusChanLen", len(vc.OpusSend))
+				"opusChanLen", len((*vc).OpusSend))
 			return errors.New("opus send channel blocked")
 		}
 		return nil
@@ -439,8 +471,56 @@ func (bot *Bot) logStreamStats(stats *streamStats) {
 		"finalTimeouts", stats.sendTimeouts)
 }
 
+// reconnectVoice attempts to reconnect to a voice channel
+func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string) (*discordgo.VoiceConnection, error) {
+	bot.Logger.Info("attempting voice reconnection", "guild_id", guildID, "channel_id", channelID)
+
+	// First, try to disconnect any existing connection
+	if vc, exists := bot.Session.VoiceConnections[guildID]; exists {
+		_ = vc.Disconnect()
+		time.Sleep(500 * time.Millisecond) // Brief pause before reconnecting
+	}
+
+	for attempt := 1; attempt <= voiceReconnectAttempts; attempt++ {
+		select {
+		case <-session.Context.Done():
+			return nil, session.Context.Err()
+		default:
+		}
+
+		bot.Logger.Info("voice reconnection attempt", "attempt", attempt, "maxAttempts", voiceReconnectAttempts)
+
+		vc, err := bot.Session.ChannelVoiceJoin(guildID, channelID, false, true)
+		if err != nil {
+			bot.Logger.Warn("voice reconnection failed", "attempt", attempt, "err", err)
+			if attempt < voiceReconnectAttempts {
+				time.Sleep(voiceReconnectDelay * time.Duration(attempt)) // Exponential backoff
+				continue
+			}
+			return nil, fmt.Errorf("failed to reconnect after %d attempts: %w", voiceReconnectAttempts, err)
+		}
+
+		// Wait a bit for connection to be ready
+		for i := 0; i < 20; i++ { // Wait up to 2 seconds
+			if vc.Ready {
+				bot.Logger.Info("voice reconnection successful", "attempt", attempt)
+				return vc, nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		bot.Logger.Warn("voice connection not ready after joining", "attempt", attempt)
+		if attempt < voiceReconnectAttempts {
+			_ = vc.Disconnect()
+			time.Sleep(voiceReconnectDelay * time.Duration(attempt))
+		}
+	}
+
+	return nil, errors.New("voice connection not ready after reconnection attempts")
+}
+
 // streamRadioWithFFmpeg uses ffmpeg to transcode the stream to Ogg Opus
-func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *StreamSession) error {
+func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *StreamSession, guildID, channelID string) error {
 	cmd, err := bot.buildFFmpegCommand(session)
 	if err != nil {
 		return fmt.Errorf("build ffmpeg command: %w", err)
@@ -463,7 +543,7 @@ func (bot *Bot) streamRadioWithFFmpeg(vc *discordgo.VoiceConnection, session *St
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
-	return bot.processStream(vc, session, bufio.NewReader(stdout))
+	return bot.processStream(vc, session, bufio.NewReader(stdout), guildID, channelID)
 }
 
 // buildFFmpegCommand constructs the ffmpeg command with all arguments
@@ -506,7 +586,7 @@ func (bot *Bot) buildFFmpegCommand(session *StreamSession) (*exec.Cmd, error) {
 }
 
 // streamRadioDirectOpus streams Ogg Opus directly from HTTP without transcoding.
-func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession) error {
+func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *StreamSession, guildID, channelID string) error {
 	client := bot.createHTTPClient()
 
 	req, err := http.NewRequestWithContext(session.Context, http.MethodGet, session.Station.StreamURL, nil)
@@ -535,7 +615,7 @@ func (bot *Bot) streamRadioDirectOpus(vc *discordgo.VoiceConnection, session *St
 	defer vc.Speaking(false)
 
 	reader := bufio.NewReaderSize(resp.Body, oggReaderBufferSize)
-	return bot.processStream(vc, session, reader)
+	return bot.processStream(vc, session, reader, guildID, channelID)
 }
 
 // createHTTPClient creates an HTTP client optimized for streaming
@@ -557,11 +637,11 @@ func (bot *Bot) createHTTPClient() *http.Client {
 }
 
 // processStream is a common handler for both ffmpeg and direct streaming
-func (bot *Bot) processStream(vc *discordgo.VoiceConnection, session *StreamSession, reader *bufio.Reader) error {
+func (bot *Bot) processStream(vc *discordgo.VoiceConnection, session *StreamSession, reader *bufio.Reader, guildID, channelID string) error {
 	packets := make(chan []byte, packetBufferSize)
 	errChan := make(chan error, 1)
 
 	go bot.parseOggOpusStream(session.Context, reader, packets, errChan)
 
-	return bot.sendOpusPackets(vc, session, packets, errChan)
+	return bot.sendOpusPackets(vc, session, packets, errChan, guildID, channelID)
 }
