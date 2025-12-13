@@ -441,15 +441,6 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 		return nil
 	}
 
-	if len(packet) > maxOpusPacketSize {
-		stats.packetsDropped++
-		bot.Logger.Warn("dropping oversized opus packet",
-			"size", len(packet),
-			"limit", maxOpusPacketSize,
-			"bufferLen", len(*ringBuffer))
-		return nil
-	}
-
 	select {
 	case (*vc).OpusSend <- packet:
 		stats.totalPacketsSent++
