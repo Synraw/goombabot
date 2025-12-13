@@ -36,6 +36,7 @@ const (
 	opusTagsSignature = "OpusTags"
 	minOpusPacketSize = 1
 	opusSignatureSize = 8
+	maxOpusPacketSize = 1275 // Discord RTP MTU budget
 
 	// FFmpeg constants
 	ffmpegBinary        = "ffmpeg"
@@ -62,7 +63,7 @@ const (
 	// Voice connection constants
 	voiceReconnectAttempts = 3
 	voiceReconnectDelay    = 2 * time.Second
-	voiceNotReadyTimeout   = 30 * time.Second // Consider connection lost if not ready for this long
+	voiceNotReadyTimeout   = 10 * time.Second // Consider connection lost if not ready for this long
 )
 
 var (
@@ -340,14 +341,20 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			}
 			consecutiveEmpty = 0
 
-			// Pass vc as pointer so it can be updated during reconnection
-			if err := bot.sendNextPacket(&vc, session.Context, &ringBuffer, &stats, session, guildID, channelID); err != nil {
-				if err == context.Canceled || err == context.DeadlineExceeded {
-					bot.Logger.Debug("sendNextPacket cancelled", "err", err)
-					bot.logStreamStats(&stats)
-					return nil
+			sendBatch := 1
+			if len(ringBuffer) > initialBufferSize {
+				sendBatch = 3 // catch up when backlog is big
+			}
+
+			for n := 0; n < sendBatch && len(ringBuffer) > 0; n++ {
+				if err := bot.sendNextPacket(&vc, session.Context, &ringBuffer, &stats, session, guildID, channelID); err != nil {
+					if err == context.Canceled || err == context.DeadlineExceeded {
+						bot.Logger.Debug("sendNextPacket cancelled", "err", err)
+						bot.logStreamStats(&stats)
+						return nil
+					}
+					return err
 				}
-				return err
 			}
 		}
 	}
@@ -434,6 +441,15 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 		return nil
 	}
 
+	if len(packet) > maxOpusPacketSize {
+		stats.packetsDropped++
+		bot.Logger.Warn("dropping oversized opus packet",
+			"size", len(packet),
+			"limit", maxOpusPacketSize,
+			"bufferLen", len(*ringBuffer))
+		return nil
+	}
+
 	select {
 	case (*vc).OpusSend <- packet:
 		stats.totalPacketsSent++
@@ -501,7 +517,7 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 		}
 
 		// Wait a bit for connection to be ready
-		for i := 0; i < 20; i++ { // Wait up to 2 seconds
+		for range 20 { // Wait up to 2 seconds
 			if vc.Ready {
 				bot.Logger.Info("voice reconnection successful", "attempt", attempt)
 				return vc, nil
