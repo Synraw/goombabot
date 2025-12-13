@@ -448,9 +448,11 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 	// Safety check - ensure OpusSend channel exists and is not nil
 	if (*vc).OpusSend == nil {
 		bot.Logger.Warn("opus send channel is nil, voice connection not fully initialized")
+		stats.notReadyCount++ // Treat this as not ready
 		return nil
 	}
 
+	// Try sending the packet with timeout
 	select {
 	case (*vc).OpusSend <- packet:
 		stats.totalPacketsSent++
@@ -464,7 +466,8 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 				"bufferLen", len(*ringBuffer),
 				"timeouts", stats.sendTimeouts,
 				"totalSent", stats.totalPacketsSent,
-				"opusSendChanLen", len((*vc).OpusSend))
+				"opusSendChanLen", len((*vc).OpusSend),
+				"ready", (*vc).Ready)
 		}
 		if stats.sendTimeouts >= 100 {
 			bot.Logger.Error("opus channel consistently blocked, likely disconnected",
@@ -492,12 +495,16 @@ func (bot *Bot) logStreamStats(stats *streamStats) {
 func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string) (*discordgo.VoiceConnection, error) {
 	bot.Logger.Info("attempting voice reconnection", "guild_id", guildID, "channel_id", channelID)
 
-	// First, try to disconnect any existing connection and wait for cleanup
+	// Clean up existing connection state WITHOUT calling Disconnect()
+	// Calling Disconnect() triggers voice state updates that cancel the session context
 	if vc, exists := bot.Session.VoiceConnections[guildID]; exists && vc != nil {
 		vc.Speaking(false) // Stop speaking first
-		_ = vc.Disconnect()
-		delete(bot.Session.VoiceConnections, guildID) // Remove from map immediately
-		time.Sleep(1 * time.Second)                   // Give more time for cleanup
+
+		// Just remove from map - let Go handle cleanup
+		// Don't close OpusSend as it might already be closed or still in use
+		delete(bot.Session.VoiceConnections, guildID)
+		bot.Logger.Debug("cleaned up stale voice connection state")
+		time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
 	}
 
 	for attempt := 1; attempt <= voiceReconnectAttempts; attempt++ {
@@ -519,8 +526,8 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 			return nil, fmt.Errorf("failed to reconnect after %d attempts: %w", voiceReconnectAttempts, err)
 		}
 
-		// Wait a bit for connection to be ready
-		for i := 0; i < 20; i++ { // Wait up to 2 seconds
+		// Wait for connection to be ready
+		for i := 0; i < 30; i++ { // Wait up to 3 seconds
 			if vc.Ready {
 				bot.Logger.Info("voice reconnection successful", "attempt", attempt)
 				return vc, nil
@@ -530,7 +537,7 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 
 		bot.Logger.Warn("voice connection not ready after joining", "attempt", attempt)
 		if attempt < voiceReconnectAttempts {
-			_ = vc.Disconnect()
+			// Clean up without triggering voice state updates
 			delete(bot.Session.VoiceConnections, guildID)
 			time.Sleep(voiceReconnectDelay * time.Duration(attempt))
 		}
