@@ -36,7 +36,6 @@ const (
 	opusTagsSignature = "OpusTags"
 	minOpusPacketSize = 1
 	opusSignatureSize = 8
-	maxOpusPacketSize = 1275 // Discord RTP MTU budget
 
 	// FFmpeg constants
 	ffmpegBinary        = "ffmpeg"
@@ -423,8 +422,13 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 
 			// Successfully reconnected
 			*vc = newVC
-			(*vc).Speaking(true) // Resume speaking state
 			stats.notReadyCount = 0
+
+			// Wait a moment for the connection to stabilize before resuming
+			time.Sleep(500 * time.Millisecond)
+
+			// Start speaking on the new connection
+			(*vc).Speaking(true)
 			bot.Logger.Info("voice connection restored, resuming playback")
 		}
 
@@ -438,6 +442,12 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 	*ringBuffer = (*ringBuffer)[1:]
 
 	if len(packet) == 0 {
+		return nil
+	}
+
+	// Safety check - ensure OpusSend channel exists and is not nil
+	if (*vc).OpusSend == nil {
+		bot.Logger.Warn("opus send channel is nil, voice connection not fully initialized")
 		return nil
 	}
 
@@ -482,10 +492,12 @@ func (bot *Bot) logStreamStats(stats *streamStats) {
 func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string) (*discordgo.VoiceConnection, error) {
 	bot.Logger.Info("attempting voice reconnection", "guild_id", guildID, "channel_id", channelID)
 
-	// First, try to disconnect any existing connection
-	if vc, exists := bot.Session.VoiceConnections[guildID]; exists {
+	// First, try to disconnect any existing connection and wait for cleanup
+	if vc, exists := bot.Session.VoiceConnections[guildID]; exists && vc != nil {
+		vc.Speaking(false) // Stop speaking first
 		_ = vc.Disconnect()
-		time.Sleep(500 * time.Millisecond) // Brief pause before reconnecting
+		delete(bot.Session.VoiceConnections, guildID) // Remove from map immediately
+		time.Sleep(1 * time.Second)                   // Give more time for cleanup
 	}
 
 	for attempt := 1; attempt <= voiceReconnectAttempts; attempt++ {
@@ -508,7 +520,7 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 		}
 
 		// Wait a bit for connection to be ready
-		for range 20 { // Wait up to 2 seconds
+		for i := 0; i < 20; i++ { // Wait up to 2 seconds
 			if vc.Ready {
 				bot.Logger.Info("voice reconnection successful", "attempt", attempt)
 				return vc, nil
@@ -519,6 +531,7 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 		bot.Logger.Warn("voice connection not ready after joining", "attempt", attempt)
 		if attempt < voiceReconnectAttempts {
 			_ = vc.Disconnect()
+			delete(bot.Session.VoiceConnections, guildID)
 			time.Sleep(voiceReconnectDelay * time.Duration(attempt))
 		}
 	}
