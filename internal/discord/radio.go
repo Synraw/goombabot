@@ -142,11 +142,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 					close(done)
 					return
 				}
-				// io.ReadAtLeast guarantees >= bytesPerFrame bytes
 			case <-session.Context.Done():
 				return
-			case <-time.After(2 * time.Second):
-				// ffmpeg pipe stalled for 2 seconds; assume it died
+			case <-time.After(10 * time.Second):
 				bot.Logger.Warn("ffmpeg pipe stalled; ending stream")
 				close(done)
 				return
@@ -195,8 +193,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			wg.Wait()
 			return nil
 		case <-done:
-			// ffmpeg ended before buffer filled; continue with what we have
-			break
 		case <-time.After(10 * time.Millisecond):
 		}
 		if time.Since(start) > startBufferTimeout {
