@@ -460,8 +460,13 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 
 			newVC, err := bot.reconnectVoice(session, guildID, channelID)
 			if err != nil {
-				bot.Logger.Error("voice reconnection failed permanently", "err", err)
-				return fmt.Errorf("voice reconnection failed: %w", err)
+				// Non-fatal: keep buffering and retry later.
+				bot.Logger.Error("voice reconnection failed; will retry", "err", err)
+				// Reset the counter so we wait another voiceNotReadyTimeout before next attempt.
+				stats.notReadyCount = 0
+				// Small pause to avoid tight retry loops during outages.
+				time.Sleep(500 * time.Millisecond)
+				return nil
 			}
 
 			// Successfully reconnected
