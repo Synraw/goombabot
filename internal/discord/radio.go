@@ -439,7 +439,7 @@ func (bot *Bot) sendNextPacket(vc **discordgo.VoiceConnection, ctx context.Conte
 
 		// Log periodically
 		if stats.notReadyCount%50 == 1 { // Log at 1, 51, 101, etc (every ~1 second)
-			bot.Logger.Info("voice not ready; waiting to resume",
+			bot.Logger.Warn("voice not ready; waiting to resume",
 				"waitTicks", stats.notReadyCount,
 				"bufferLen", len(*ringBuffer),
 				"totalSent", stats.totalPacketsSent)
@@ -570,7 +570,7 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 		}
 
 		// Wait for connection to be ready
-		for i := 0; i < 30; i++ { // Wait up to 3 seconds
+		for range 30 { // Wait up to 3 seconds
 			if vc.Ready {
 				bot.Logger.Info("voice reconnection successful", "attempt", attempt)
 				return vc, nil
