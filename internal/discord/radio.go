@@ -337,12 +337,6 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 			packetDelta := stats.totalPacketsReceived - stats.lastHealthCheckPackets
 			packetsPerSecond := float64(packetDelta) / elapsed
 
-			bot.Logger.Debug("stream health check",
-				"packetsPerSecond", packetsPerSecond,
-				"packetDelta", packetDelta,
-				"bufferLen", len(ringBuffer),
-				"totalReceived", stats.totalPacketsReceived)
-
 			if packetsPerSecond < float64(minPacketsPerSecond) && len(ringBuffer) < initialBufferSize {
 				stats.lowPacketRateCount++
 				bot.Logger.Warn("low packet rate detected",
