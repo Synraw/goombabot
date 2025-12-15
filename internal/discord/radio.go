@@ -544,12 +544,16 @@ func (bot *Bot) logStreamStats(stats *streamStats) {
 func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string) (*discordgo.VoiceConnection, error) {
 	bot.Logger.Info("attempting voice reconnection", "guild_id", guildID, "channel_id", channelID)
 
+	// If we have a prior VC, leave cleanly to avoid stuck voice state
 	if vc, exists := bot.Session.VoiceConnections[guildID]; exists && vc != nil {
-		vc.Speaking(false) // Stop speaking first
-
+		vc.Speaking(false)
+		// Best-effort: leave the current channel and close sockets
+		_ = vc.Disconnect()
+		vc.Close()
+		time.Sleep(500 * time.Millisecond)
+		// Remove stale entry
 		delete(bot.Session.VoiceConnections, guildID)
-		bot.Logger.Debug("cleaned up stale voice connection state")
-		time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+		bot.Logger.Debug("cleaned up prior voice connection")
 	}
 
 	for attempt := 1; attempt <= voiceReconnectAttempts; attempt++ {
@@ -582,7 +586,9 @@ func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string
 
 		bot.Logger.Warn("voice connection not ready after joining", "attempt", attempt)
 		if attempt < voiceReconnectAttempts {
-			// Clean up without triggering voice state updates
+			// Leave and try again to force a fresh session
+			_ = vc.Disconnect()
+			vc.Close()
 			delete(bot.Session.VoiceConnections, guildID)
 			time.Sleep(voiceReconnectDelay * time.Duration(attempt))
 		}
