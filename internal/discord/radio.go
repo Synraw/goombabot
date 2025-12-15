@@ -24,7 +24,11 @@ const (
 	tickInterval        = 20 * time.Millisecond
 	opusSendTimeout     = 500 * time.Millisecond
 	maxInvalidOggPages  = 10
-	maxConsecutiveEmpty = 50 // 1 second of empty ticks
+	maxConsecutiveEmpty = 200 // 4 seconds of empty ticks (increased from 50 for long streams)
+
+	// Stream health monitoring
+	healthCheckInterval = 5 * time.Second
+	minPacketsPerSecond = 5 // Minimum healthy packet rate
 
 	// Ogg constants
 	oggMagicNumber = "OggS"
@@ -267,9 +271,14 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
+	healthTicker := time.NewTicker(healthCheckInterval)
+	defer healthTicker.Stop()
+
 	var stats streamStats
 	consecutiveEmpty := 0
 	lastOverflowLog := time.Time{}
+	stats.lastHealthCheckTime = time.Now()
+	stats.lastHealthCheckPackets = 0
 
 	for {
 		select {
@@ -322,6 +331,38 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 				}
 			}
 
+		case <-healthTicker.C:
+			// Check stream health every 5 seconds
+			elapsed := time.Since(stats.lastHealthCheckTime).Seconds()
+			packetDelta := stats.totalPacketsReceived - stats.lastHealthCheckPackets
+			packetsPerSecond := float64(packetDelta) / elapsed
+
+			bot.Logger.Debug("stream health check",
+				"packetsPerSecond", packetsPerSecond,
+				"packetDelta", packetDelta,
+				"bufferLen", len(ringBuffer),
+				"totalReceived", stats.totalPacketsReceived)
+
+			if packetsPerSecond < float64(minPacketsPerSecond) && len(ringBuffer) < initialBufferSize {
+				stats.lowPacketRateCount++
+				bot.Logger.Warn("low packet rate detected",
+					"packetsPerSecond", packetsPerSecond,
+					"bufferLen", len(ringBuffer),
+					"lowRateCount", stats.lowPacketRateCount)
+
+				// If low packet rate persists, attempt HTTP reconnection for direct streams
+				if stats.lowPacketRateCount >= 3 {
+					bot.Logger.Warn("persistent low packet rate, stream may have stalled")
+					// Don't fail immediately; let the parser timeout handle it
+					stats.lowPacketRateCount = 0
+				}
+			} else {
+				stats.lowPacketRateCount = 0
+			}
+
+			stats.lastHealthCheckTime = time.Now()
+			stats.lastHealthCheckPackets = stats.totalPacketsReceived
+
 		case <-ticker.C:
 			if len(ringBuffer) == 0 {
 				consecutiveEmpty++
@@ -332,7 +373,7 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 						bot.logStreamStats(&stats)
 						return nil
 					}
-					bot.Logger.Error("buffer starved", "count", consecutiveEmpty)
+					bot.Logger.Error("buffer starved", "count", consecutiveEmpty, "bufferLen", len(ringBuffer))
 					bot.logStreamStats(&stats)
 					return ErrBufferStarvation
 				}
@@ -361,11 +402,14 @@ func (bot *Bot) sendOpusPackets(vc *discordgo.VoiceConnection, session *StreamSe
 
 // streamStats tracks streaming metrics
 type streamStats struct {
-	totalPacketsReceived int
-	totalPacketsSent     int
-	packetsDropped       int
-	sendTimeouts         int
-	notReadyCount        int
+	totalPacketsReceived   int
+	totalPacketsSent       int
+	packetsDropped         int
+	sendTimeouts           int
+	notReadyCount          int
+	lastHealthCheckPackets int
+	lastHealthCheckTime    time.Time
+	lowPacketRateCount     int
 }
 
 // fillInitialBuffer fills the buffer to initialBufferSize before starting playback
@@ -495,13 +539,9 @@ func (bot *Bot) logStreamStats(stats *streamStats) {
 func (bot *Bot) reconnectVoice(session *StreamSession, guildID, channelID string) (*discordgo.VoiceConnection, error) {
 	bot.Logger.Info("attempting voice reconnection", "guild_id", guildID, "channel_id", channelID)
 
-	// Clean up existing connection state WITHOUT calling Disconnect()
-	// Calling Disconnect() triggers voice state updates that cancel the session context
 	if vc, exists := bot.Session.VoiceConnections[guildID]; exists && vc != nil {
 		vc.Speaking(false) // Stop speaking first
 
-		// Just remove from map - let Go handle cleanup
-		// Don't close OpusSend as it might already be closed or still in use
 		delete(bot.Session.VoiceConnections, guildID)
 		bot.Logger.Debug("cleaned up stale voice connection state")
 		time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
