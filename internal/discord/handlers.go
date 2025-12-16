@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	shortDelay  = 5 * time.Second
-	mediumDelay = 15 * time.Second
-	longDelay   = 30 * time.Second
-	maxLabelLen = 100
+	shortDelay    = 5 * time.Second
+	mediumDelay   = 15 * time.Second
+	longDelay     = 30 * time.Second
+	maxLabelLen   = 100
 	DefaultVolume = 1.0 // default volume multiplier
-	VolumeMin   = 5
-	VolumeMax   = 200
+	VolumeMin     = 5
+	VolumeMax     = 200
 )
 
 // truncateLabel ensures select option labels meet Discord's 1–100 char limit.
@@ -505,10 +505,11 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	}
 
 	bot.radioMutex.Lock()
+	oldVolume := int(vc.Session.Volume * 100)
 	vc.Session.Volume = float64(volumeVal) / 100.0
 	bot.radioMutex.Unlock()
 
-	msg := "Set volume to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
+	msg := "Set volume from " + strconv.Itoa(oldVolume) + "% to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
 	bot.NewResponseBuilder(s, i).Success(msg, shortDelay)
 }
 
