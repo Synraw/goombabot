@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func truncateLabel(label string) string {
 	return string(r[:maxLabelLen-1]) + "…"
 }
 
-// helper functions
+// ===== Response Helpers =====
 
 // deleteMessageAfter deletes the interaction response after the given delay.
 func deleteMessageAfter(s *discordgo.Session, i *discordgo.InteractionCreate, delay time.Duration) {
@@ -54,6 +55,128 @@ func createResponseEx(i *discordgo.InteractionResponseData) *discordgo.Interacti
 	}
 }
 
+// ResponseBuilder provides a fluent interface for sending Discord responses.
+type ResponseBuilder struct {
+	session     *discordgo.Session
+	interaction *discordgo.InteractionCreate
+	bot         *Bot
+}
+
+// NewResponseBuilder creates a new response builder for an interaction.
+func (bot *Bot) NewResponseBuilder(s *discordgo.Session, i *discordgo.InteractionCreate) *ResponseBuilder {
+	return &ResponseBuilder{
+		session:     s,
+		interaction: i,
+		bot:         bot,
+	}
+}
+
+// Success sends a success message and deletes it after delay.
+func (rb *ResponseBuilder) Success(msg string, delay time.Duration) {
+	_ = rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg))
+	deleteMessageAfter(rb.session, rb.interaction, delay)
+}
+
+// Error logs and sends an error message, deleting after delay.
+func (rb *ResponseBuilder) Error(msg string, err error, delay time.Duration) {
+	if rb.bot.Logger != nil && err != nil {
+		rb.bot.Logger.Warn(msg, "err", err)
+	}
+	_ = rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg))
+	deleteMessageAfter(rb.session, rb.interaction, delay)
+}
+
+// WithComponents sends a response with components (buttons, select menus).
+func (rb *ResponseBuilder) WithComponents(msg string, components ...discordgo.MessageComponent) {
+	resp := &discordgo.InteractionResponseData{
+		Content:    msg,
+		Components: components,
+		Flags:      discordgo.MessageFlagsEphemeral,
+	}
+	if err := rb.session.InteractionRespond(rb.interaction.Interaction, createResponseEx(resp)); err != nil {
+		rb.bot.Logger.Warn("failed to send response with components", "err", err)
+	}
+}
+
+// ===== Validation Helpers =====
+
+// VoiceContext holds validated voice channel state.
+type VoiceContext struct {
+	Guild        *discordgo.Guild
+	VoiceChannel string
+	Session      *StreamSession
+}
+
+// validateVoiceContext validates that the user is in a voice channel with an active stream.
+func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.InteractionCreate) (*VoiceContext, error) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		return nil, errors.New("could not get guild")
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		return nil, errors.New("you must be in a voice channel")
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		return nil, errors.New("not connected to a voice channel")
+	}
+
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		return nil, errors.New("no active radio session")
+	}
+
+	return &VoiceContext{
+		Guild:        guild,
+		VoiceChannel: voiceChannelID,
+		Session:      session,
+	}, nil
+}
+
+// validateVoiceContextBasic validates basic voice channel connectivity without requiring an active session.
+func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate) (*VoiceContext, error) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		return nil, errors.New("could not get guild")
+	}
+
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		return nil, errors.New("you must be in a voice channel")
+	}
+
+	if s.VoiceConnections[guild.ID] == nil {
+		return nil, errors.New("not connected to a voice channel")
+	}
+
+	return &VoiceContext{
+		Guild:        guild,
+		VoiceChannel: voiceChannelID,
+	}, nil
+}
+
+// ===== Option Parsing Helpers =====
+
+// getIntOption extracts an int64 from options at the given index.
+func getIntOption(opts []*discordgo.ApplicationCommandInteractionDataOption, index int) (int64, error) {
+	if len(opts) <= index {
+		return 0, errors.New("option not found")
+	}
+	return opts[index].IntValue(), nil
+}
+
+// getStringOption extracts a string from options at the given index.
+func getStringOption(opts []*discordgo.ApplicationCommandInteractionDataOption, index int) (string, error) {
+	if len(opts) <= index {
+		return "", errors.New("option not found")
+	}
+	return opts[index].StringValue(), nil
+}
+
+// ===== Voice Channel Helpers =====
+
 // getUserVoiceChannelID returns the voice channel ID the user is currently in, or "" if not found.
 func getUserVoiceChannelID(guild *discordgo.Guild, userID string) string {
 	for _, vs := range guild.VoiceStates {
@@ -64,51 +187,140 @@ func getUserVoiceChannelID(guild *discordgo.Guild, userID string) string {
 	return ""
 }
 
-// respondWithError logs, sends a response, and deletes it after delay.
-func (bot *Bot) respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, msg string, err error, delay time.Duration) {
-	if bot.Logger != nil && err != nil {
-		bot.Logger.Warn(msg, "err", err)
+// ===== UI Builders =====
+
+// buildStationSelectMenu creates a select menu for choosing radio stations.
+func (bot *Bot) buildStationSelectMenu() discordgo.SelectMenu {
+	minValues := 1
+	menu := discordgo.SelectMenu{
+		CustomID:    "radio_station_select",
+		Placeholder: "Select a station",
+		MinValues:   &minValues,
+		MaxValues:   len(bot.radioStations),
+		Options:     []discordgo.SelectMenuOption{},
 	}
-	_ = s.InteractionRespond(i.Interaction, createResponse(msg))
-	deleteMessageAfter(s, i, delay)
+
+	for id, station := range bot.radioStations {
+		menu.Options = append(menu.Options, discordgo.SelectMenuOption{
+			Label: truncateLabel(station.Name),
+			Value: strconv.Itoa(id),
+		})
+	}
+
+	return menu
 }
+
+// buildSongSelectMenu creates a select menu from a map of songs, limiting to 25 options.
+func buildSongSelectMenu(songs map[string]azurecast.StationSongRequest) discordgo.SelectMenu {
+	minValues := 1
+	menu := discordgo.SelectMenu{
+		CustomID:    "song_request_select",
+		Placeholder: "Select a song to request",
+		MinValues:   &minValues,
+		MaxValues:   1,
+		Options:     []discordgo.SelectMenuOption{},
+	}
+
+	count := 0
+	for requestID, song := range songs {
+		if count >= 25 {
+			break
+		}
+		menu.Options = append(menu.Options, discordgo.SelectMenuOption{
+			Label: truncateLabel(song.Song.Title + " by " + song.Song.Artist),
+			Value: requestID,
+		})
+		count++
+	}
+
+	return menu
+}
+
+// formatNowPlaying formats now playing information into a Discord message.
+func formatNowPlaying(np *azurecast.NowPlaying) string {
+	msg := "Now Playing:\n"
+
+	title := np.NowPlaying.Song.Title
+	if title == "" {
+		title = "Unknown Title"
+	}
+	msg += "**" + title + "**"
+
+	if np.NowPlaying.Song.Artist != "" {
+		msg += " by **" + np.NowPlaying.Song.Artist + "**"
+	} else {
+		msg += " by Unknown Artist"
+	}
+
+	if np.NowPlaying.Song.Album != "" {
+		msg += " from the album **" + np.NowPlaying.Song.Album + "**"
+	}
+
+	return msg
+}
+
+// ===== Song Request Logic =====
 
 // requestSong handles the process of requesting a song on the radio station.
 func (bot *Bot) requestSong(s *discordgo.Session, i *discordgo.InteractionCreate, song azurecast.StationSongRequest, stationID int) {
-	// Request the song
 	response, err := bot.azureApiClient.RequestStationSong(context.Background(), strconv.Itoa(stationID), song)
 	if err != nil {
-		bot.respondWithError(s, i, "Failed to request the song.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Failed to request the song.", err, shortDelay)
 		return
 	}
 
-	// Check response success
 	if !response.Success {
-		bot.respondWithError(s, i, "Failed to request the song: "+response.Message, nil, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Failed to request the song: "+response.Message, nil, shortDelay)
 		return
 	}
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+song.Song.Title+"** by **"+song.Song.Artist+"** from the album **"+song.Song.Album+"**."))
-	deleteMessageAfter(s, i, mediumDelay)
+	msg := "Requested song **" + song.Song.Title + "** by **" + song.Song.Artist + "** from the album **" + song.Song.Album + "**."
+	bot.NewResponseBuilder(s, i).Success(msg, mediumDelay)
 }
+
+// findMatchingSongs searches for songs matching a query (case-insensitive).
+func findMatchingSongs(songs []azurecast.StationSongRequest, query string) map[string]azurecast.StationSongRequest {
+	results := make(map[string]azurecast.StationSongRequest)
+	queryLower := strings.ToLower(query)
+
+	for _, song := range songs {
+		if strings.Contains(strings.ToLower(song.Song.Text), queryLower) {
+			results[song.RequestID] = song
+		}
+	}
+
+	return results
+}
+
+// findSongByID searches for a song by its request ID.
+func findSongByID(songs []azurecast.StationSongRequest, requestID string) *azurecast.StationSongRequest {
+	for i := range songs {
+		if songs[i].RequestID == requestID {
+			return &songs[i]
+		}
+	}
+	return nil
+}
+
+// ===== Radio Stream Logic =====
 
 // runRadioStream handles the process of joining voice and streaming the radio.
 func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Could not get guild.", err, shortDelay)
 		return
 	}
 
 	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
 	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("You must be in a voice channel.", nil, shortDelay)
 		return
 	}
 
 	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
 	if err != nil {
-		bot.respondWithError(s, i, "Failed to join voice channel.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Failed to join voice channel.", err, shortDelay)
 		return
 	}
 
@@ -133,6 +345,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 			}
 			bot.radioMutex.Unlock()
 		}()
+
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 		if err := bot.streamRadio(vc, bot.radioSessions[guild.ID]); err != nil {
 			bot.Logger.Error("streaming error", "err", err)
@@ -140,22 +353,18 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 	}()
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Starting radio: **"+station.Name+"**"))
-	deleteMessageAfter(s, i, shortDelay)
+	bot.NewResponseBuilder(s, i).Success("Starting radio: **"+station.Name+"**", shortDelay)
 }
 
-// command handlers
+// ===== Command Handlers =====
 
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// check if already in a voice channel and streaming
 	if _, ok := s.VoiceConnections[i.GuildID]; ok && bot.radioSessions[i.GuildID] != nil {
-		_ = s.InteractionRespond(i.Interaction, createResponse("Already streaming in a voice channel. Use /stop to stop the current stream first."))
-		deleteMessageAfter(s, i, shortDelay)
+		bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
 		return
 	}
 
-	// if only one station, select it by default
 	if len(bot.radioStations) == 1 {
 		for _, station := range bot.radioStations {
 			bot.runRadioStream(s, i, station)
@@ -163,307 +372,144 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	minValues := 1
-	stationSelect := discordgo.SelectMenu{
-		CustomID:    "radio_station_select",
-		Placeholder: "Select a station",
-		MinValues:   &minValues,
-		MaxValues:   len(bot.radioStations),
-		Options:     []discordgo.SelectMenuOption{}, // start empty
-	}
-
-	// Populate options
-	for id, station := range bot.radioStations {
-		stationSelect.Options = append(stationSelect.Options, discordgo.SelectMenuOption{
-			Label: truncateLabel(station.Name),
-			Value: strconv.Itoa(id),
-		})
-	}
-
-	// send the select menu as a response
-	resp := &discordgo.InteractionResponseData{
-		Content: "Select a radio station:",
-		Components: []discordgo.MessageComponent{
-			discordgo.ActionsRow{
-				Components: []discordgo.MessageComponent{
-					stationSelect,
-				},
-			},
+	stationMenu := bot.buildStationSelectMenu()
+	bot.NewResponseBuilder(s, i).WithComponents("Select a radio station:",
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{stationMenu},
 		},
-		Flags: discordgo.MessageFlagsEphemeral,
-	}
-
-	if err := s.InteractionRespond(i.Interaction, createResponseEx(resp)); err != nil {
-		bot.Logger.Warn("failed to send radio select", "err", err)
-	}
+	)
 }
 
 // handleStop stops the current radio stream and disconnects from voice.
 func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guild, err := s.State.Guild(i.GuildID)
+	vc, err := bot.validateVoiceContextBasic(s, i)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
-		return
+	voiceConn := s.VoiceConnections[vc.Guild.ID]
+	bot.radioMutex.Lock()
+	if session, ok := bot.radioSessions[vc.Guild.ID]; ok && session != nil {
+		session.Cancel()
+		delete(bot.radioSessions, vc.Guild.ID)
 	}
+	bot.radioMutex.Unlock()
 
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-
-	if vc, ok := s.VoiceConnections[guild.ID]; ok {
-		bot.radioMutex.Lock()
-		if session, ok := bot.radioSessions[guild.ID]; ok && session != nil {
-			session.Cancel()
-			delete(bot.radioSessions, guild.ID)
-		}
-		bot.radioMutex.Unlock()
-		_ = vc.Disconnect()
-	}
-
-	_ = s.InteractionRespond(i.Interaction, createResponse("Stopped the radio."))
-	deleteMessageAfter(s, i, shortDelay)
+	_ = voiceConn.Disconnect()
+	bot.NewResponseBuilder(s, i).Success("Stopped the radio.", shortDelay)
 }
 
 // handleSkip skips the currently playing song on the radio station.
 func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guild, err := s.State.Guild(i.GuildID)
+	vc, err := bot.validateVoiceContext(s, i)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+	if vc.Session.UserID != i.Member.User.ID {
+		bot.NewResponseBuilder(s, i).Error("Only the user who started the stream can skip.", nil, shortDelay)
 		return
 	}
 
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		bot.respondWithError(s, i, "No active radio session to skip.", nil, shortDelay)
-		return
-	}
-
-	if session.UserID != i.Member.User.ID {
-		bot.respondWithError(s, i, "Only the user who started the stream can skip.", nil, shortDelay)
-		return
-	}
-
-	err = bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(session.Station.ID))
+	err = bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(vc.Session.Station.ID))
 	if err != nil {
-		bot.respondWithError(s, i, "Failed to skip the current song.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Failed to skip the current song.", err, shortDelay)
 		return
 	}
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Skipped the current song."))
-	deleteMessageAfter(s, i, shortDelay)
+	bot.NewResponseBuilder(s, i).Success("Skipped the current song.", shortDelay)
 }
 
 // handleNowPlaying shows the currently playing song on the radio station.
 func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guild, err := s.State.Guild(i.GuildID)
+	vc, err := bot.validateVoiceContext(s, i)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
-		return
-	}
-
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
-		return
-	}
-
-	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(session.Station.ID))
+	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(vc.Session.Station.ID))
 	if err != nil {
-		bot.respondWithError(s, i, "Failed to get now playing information.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Failed to get now playing information.", err, shortDelay)
 		return
 	}
 
-	response := "Now Playing:\n"
-	if np.NowPlaying.Song.Title != "" {
-		response += "**" + np.NowPlaying.Song.Title + "**"
-	} else {
-		response += "Unknown Title"
-	}
-	if np.NowPlaying.Song.Artist != "" {
-		response += " by **" + np.NowPlaying.Song.Artist + "**"
-	} else {
-		response += " by Unknown Artist"
-	}
-	if np.NowPlaying.Song.Album != "" {
-		response += " from the album **" + np.NowPlaying.Song.Album + "**"
-	}
-	_ = s.InteractionRespond(i.Interaction, createResponse(response))
-	deleteMessageAfter(s, i, longDelay)
+	bot.NewResponseBuilder(s, i).Success(formatNowPlaying(np), longDelay)
 }
 
+// handleRequest handles song requests for the radio station.
 func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guild, err := s.State.Guild(i.GuildID)
+	vc, err := bot.validateVoiceContext(s, i)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
-		return
-	}
-
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-
-	// get current session
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
-		return
-	}
-
-	// Extract song name early
 	opts := i.ApplicationCommandData().Options
-	if len(opts) == 0 {
-		bot.respondWithError(s, i, "Song name is required.", nil, shortDelay)
-		return
-	}
-	songName := opts[0].StringValue() // only one option for request
-
-	// Get requestable songs
-	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(session.Station.ID))
+	songName, err := getStringOption(opts, 0)
 	if err != nil {
-		bot.respondWithError(s, i, "Failed to get requestable songs.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Song name is required.", err, shortDelay)
 		return
 	}
 
-	// Find matching song (case-insensitive)
-	matchingSongs := map[string]azurecast.StationSongRequest{}
-	songNameLower := strings.ToLower(songName)
-	for i := range requestableSongs {
-		if strings.Contains(strings.ToLower(requestableSongs[i].Song.Text), songNameLower) {
-			matchingSongs[requestableSongs[i].RequestID] = requestableSongs[i]
-		}
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
+		return
 	}
 
-	// If no song found
+	matchingSongs := findMatchingSongs(requestableSongs, songName)
 	if len(matchingSongs) == 0 {
-		bot.respondWithError(s, i, "Song not found in requestable list.", nil, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("Song not found in requestable list.", nil, shortDelay)
 		return
 	}
 
-	// If only one match, request it directly
 	if len(matchingSongs) == 1 {
 		for _, song := range matchingSongs {
-			bot.requestSong(s, i, song, session.Station.ID)
+			bot.requestSong(s, i, song, vc.Session.Station.ID)
 		}
 		return
 	}
 
-	// Multiple matches - ask user to select
-	minValues := 1
-	songSelect := discordgo.SelectMenu{
-		CustomID:    "song_request_select",
-		Placeholder: "Select a song to request",
-		MinValues:   &minValues,
-		MaxValues:   1,
-		Options:     []discordgo.SelectMenuOption{}, // start empty
-	}
-
-	// Populate options (limit to 25 options due to Discord API limits)
-	count := 0
-	for requestID, song := range matchingSongs {
-		if count >= 25 {
-			break
-		}
-		songSelect.Options = append(songSelect.Options, discordgo.SelectMenuOption{
-			Label: truncateLabel(song.Song.Title + " by " + song.Song.Artist),
-			Value: requestID,
-		})
-		count++
-	}
-
-	// send the select menu as a response
-	resp := &discordgo.InteractionResponseData{
-		Content: "Multiple songs found. Please select one (only showing the first 25):",
-		Components: []discordgo.MessageComponent{
-			discordgo.ActionsRow{
-				Components: []discordgo.MessageComponent{
-					songSelect,
-				},
-			},
+	songMenu := buildSongSelectMenu(matchingSongs)
+	bot.NewResponseBuilder(s, i).WithComponents("Multiple songs found. Please select one (only showing the first 25):",
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{songMenu},
 		},
-		Flags: discordgo.MessageFlagsEphemeral,
-	}
-
-	if err := s.InteractionRespond(i.Interaction, createResponseEx(resp)); err != nil {
-		bot.Logger.Warn("failed to send song select", "err", err)
-	}
+	)
 }
 
 // handleVolume adjusts the streaming volume for the current session.
 func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guild, err := s.State.Guild(i.GuildID)
+	vc, err := bot.validateVoiceContext(s, i)
 	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
-		return
-	}
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-	// get current session
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
-		return
-	}
-	// Extract volume value
+
 	opts := i.ApplicationCommandData().Options
-	if len(opts) == 0 {
-		bot.respondWithError(s, i, "Volume value is required.", nil, shortDelay)
+	volumeVal, err := getIntOption(opts, 0)
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Volume value is required.", err, shortDelay)
 		return
 	}
-	volume := opts[0].IntValue() // only one option for volume
-	if volume < 5 || volume > 200 {
-		bot.respondWithError(s, i, "Volume must be between 5 and 200.", nil, shortDelay)
+
+	if volumeVal < 5 || volumeVal > 200 {
+		bot.NewResponseBuilder(s, i).Error("Volume must be between 5 and 200.", nil, shortDelay)
 		return
 	}
 
 	bot.radioMutex.Lock()
-	session.Volume = float64(volume) / 100.0
+	vc.Session.Volume = float64(volumeVal) / 100.0
 	bot.radioMutex.Unlock()
-	_ = s.InteractionRespond(i.Interaction, createResponse("Set volume to "+strconv.FormatFloat(float64(session.Volume), 'f', -1, 64)+"%"))
-	deleteMessageAfter(s, i, shortDelay)
+
+	msg := "Set volume to " + strconv.FormatFloat(float64(volumeVal), 'f', -1, 64) + "%"
+	bot.NewResponseBuilder(s, i).Success(msg, shortDelay)
 }
+
+// ===== Component Handlers =====
 
 // handleComponent routes interaction component events to the appropriate handler.
 func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -475,6 +521,52 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 }
 
+// handleRadioSelect processes the station selection and starts streaming.
+func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	values := i.MessageComponentData().Values
+	if len(values) == 0 {
+		bot.NewResponseBuilder(s, i).Success("No station selected.", shortDelay)
+		return
+	}
+
+	stationID, _ := strconv.Atoi(values[0])
+	station := bot.radioStations[stationID]
+	bot.runRadioStream(s, i, station)
+}
+
+// handleSongRequestSelect processes the song selection and requests it.
+func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	values := i.MessageComponentData().Values
+	if len(values) == 0 {
+		bot.NewResponseBuilder(s, i).Success("No song selected.", shortDelay)
+		return
+	}
+
+	vc, err := bot.validateVoiceContext(s, i)
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+		return
+	}
+
+	requestID := values[0]
+
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
+		return
+	}
+
+	selectedSong := findSongByID(requestableSongs, requestID)
+	if selectedSong == nil {
+		bot.NewResponseBuilder(s, i).Error("Selected song not found.", nil, shortDelay)
+		return
+	}
+
+	bot.requestSong(s, i, *selectedSong, vc.Session.Station.ID)
+}
+
+// ===== Command Router =====
+
 // handleCommands routes interaction command events to the appropriate handler.
 func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
@@ -484,80 +576,4 @@ func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 	def.Handle(bot, s, i)
-}
-
-// handleRadioSelect processes the station selection and starts streaming.
-func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	values := i.MessageComponentData().Values
-	if len(values) == 0 {
-		_ = s.InteractionRespond(i.Interaction, createResponse("No station selected."))
-		deleteMessageAfter(s, i, shortDelay)
-		return
-	}
-
-	stationID, _ := strconv.Atoi(values[0])
-	station := bot.radioStations[stationID]
-
-	bot.runRadioStream(s, i, station)
-}
-
-// handleSongRequestSelect processes the song selection and requests it.
-func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	values := i.MessageComponentData().Values
-	if len(values) == 0 {
-		_ = s.InteractionRespond(i.Interaction, createResponse("No song selected."))
-		deleteMessageAfter(s, i, shortDelay)
-		return
-	}
-
-	guild, err := s.State.Guild(i.GuildID)
-	if err != nil {
-		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
-		return
-	}
-
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
-		return
-	}
-
-	if s.VoiceConnections[guild.ID] == nil {
-		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
-		return
-	}
-
-	// get current session
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
-		return
-	}
-
-	requestID := values[0]
-
-	// Get requestable songs to find the selected one.
-	// We re-fetch here rather than caching from handleRequest to ensure we have
-	// the latest song list, as there may be a delay between showing the menu and selection.
-	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(session.Station.ID))
-	if err != nil {
-		bot.respondWithError(s, i, "Failed to get requestable songs.", err, shortDelay)
-		return
-	}
-
-	// Find the song with matching requestID
-	var selectedSong *azurecast.StationSongRequest
-	for idx := range requestableSongs {
-		if requestableSongs[idx].RequestID == requestID {
-			selectedSong = &requestableSongs[idx]
-			break
-		}
-	}
-
-	if selectedSong == nil {
-		bot.respondWithError(s, i, "Selected song not found.", nil, shortDelay)
-		return
-	}
-
-	bot.requestSong(s, i, *selectedSong, session.Station.ID)
 }
