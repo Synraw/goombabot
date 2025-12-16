@@ -505,7 +505,7 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	vc.Session.Volume = float64(volumeVal) / 100.0
 	bot.radioMutex.Unlock()
 
-	msg := "Set volume to " + strconv.FormatFloat(float64(volumeVal), 'f', -1, 64) + "%"
+	msg := "Set volume to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
 	bot.NewResponseBuilder(s, i).Success(msg, shortDelay)
 }
 
