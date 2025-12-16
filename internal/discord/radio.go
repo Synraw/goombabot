@@ -156,13 +156,19 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 			// Drop oldest if buffer full; keep most recent frames
 			select {
+			case <-session.Context.Done():
+				return
 			case frames <- opus:
 			default:
 				select {
+				case <-session.Context.Done():
+					return
 				case <-frames:
 				default:
 				}
 				select {
+				case <-session.Context.Done():
+					return
 				case frames <- opus:
 				default:
 					// Buffer still congested; skip frame
