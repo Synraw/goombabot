@@ -13,14 +13,23 @@ import (
 )
 
 const (
-	pcmSampleRate       = 48000
-	pcmChannels         = 2
-	opusFrameMillis     = 20   // 20ms frames are standard for Discord
-	initialBufferFrames = 300  // ~6s; WSL2 I/O needs bigger buffer
-	maxBufferFrames     = 1500 // WSL2 can be unpredictable; need more headroom
-	opusSendWarnTimeout = 200 * time.Millisecond
-	startBufferTimeout  = 6 * time.Second // WSL2 startup is slower
+	pcmSampleRate       = 48000                  // Discord standard
+	pcmChannels         = 2                      // stereo
+	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
+	initialBufferFrames = 300                    // ~6s initial buffer to smooth jitter
+	maxBufferFrames     = 1500                   // ~30s max to avoid excessive memory use
+	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
+	startBufferTimeout  = 6 * time.Second        // max wait for initial buffer
 )
+
+// goWait starts fn in a goroutine and tracks it with the WaitGroup.
+func goWait(wg *sync.WaitGroup, fn func()) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fn()
+	}()
+}
 
 // streamRadio uses ffmpeg to decode the remote stream to raw PCM and encodes
 // it to Opus frames with gopus, sending directly to Discord. This keeps the
@@ -32,19 +41,14 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		ffmpegBin = ".\\ffmpeg.exe"
 	}
 
-	// Do NOT use -re; we control pacing with a ticker and buffer
-	// WSL2 I/O is unpredictable. Use ffmpeg's internal buffering to smooth the stream,
-	// and let our Go buffer absorb timing jitter from the virtual I/O layer.
 	var afiltergraph string
 	var extraArgs []string
 	if runtime.GOOS == "linux" {
-		// WSL2 workaround: use native resampler without async (simpler, fewer context switches)
-		// and let ffmpeg do more buffering on its end to smooth network/WSL jitter
 		afiltergraph = "aresample=48000"
 		extraArgs = []string{
 			"-fflags", "+nobuffer+genpts",
 			"-thread_queue_size", "256",
-			"-buffer_size", "2M", // Larger ffmpeg buffer for WSL2 unpredictability
+			"-buffer_size", "2M",
 		}
 	} else {
 		// Windows: async resampler smooths timing
@@ -90,9 +94,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	if err != nil {
 		return err
 	}
-	// Configure encoder for stable, CBR-like output
-	// Note: older gopus APIs use void setters (no error return) and expose
-	// fewer tuning knobs. Use what's available for this version.
+
 	enc.SetBitrate(128000)
 	enc.SetVbr(false)
 
@@ -109,13 +111,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	done := make(chan struct{})
 
 	// Producer: read PCM frames and encode to Opus
-	// Use a dedicated reader with timeout to prevent blocking on slow ffmpeg
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	goWait(&wg, func() {
 		pcmBuf := make([]byte, bytesPerFrame)
 		int16Buf := make([]int16, samplesPerFrame)
-		framesRead := 0
 
 		for {
 			select {
@@ -124,45 +122,21 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			default:
 			}
 
-			// Read PCM with timeout to avoid indefinite blocking
-			// Use io.ReadAtLeast to read exactly what we need; avoids partial reads
-			type readResult struct {
-				n   int
-				err error
-			}
-			readChan := make(chan readResult, 1)
-			go func() {
-				n, err := io.ReadAtLeast(stdout, pcmBuf, bytesPerFrame)
-				readChan <- readResult{n, err}
-			}()
-
-			select {
-			case result := <-readChan:
-				if result.err != nil {
-					close(done)
-					return
-				}
-			case <-session.Context.Done():
-				return
-			case <-time.After(10 * time.Second):
-				bot.Logger.Warn("ffmpeg pipe stalled; ending stream")
+			// Read exactly one Opus frame worth of PCM; context cancellation kills ffmpeg so read returns
+			if _, err := io.ReadFull(stdout, pcmBuf); err != nil {
 				close(done)
 				return
 			}
 
-			// Convert bytes to int16 samples
 			for i := 0; i < samplesPerFrame; i++ {
 				int16Buf[i] = int16(binary.LittleEndian.Uint16(pcmBuf[i*2 : i*2+2]))
 			}
 
-			// Encode to Opus
 			opus, err := enc.Encode(int16Buf, frameSamples, bytesPerFrame)
 			if err != nil {
 				close(done)
 				return
 			}
-
-			framesRead++
 
 			// Drop oldest if buffer full; keep most recent frames
 			select {
@@ -175,11 +149,11 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				select {
 				case frames <- opus:
 				default:
-					// Even dropping one didn't help; skip this frame
+					// Buffer still congested; skip frame
 				}
 			}
 		}
-	}()
+	})
 
 	vc.Speaking(true)
 	defer vc.Speaking(false)
@@ -223,7 +197,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			}
 
 			// Get a frame if available; if not, skip this tick to prevent jitter
-			// (WSL2 will catch up on the next few ticks)
 			var frame []byte
 			select {
 			case frame = <-frames:
