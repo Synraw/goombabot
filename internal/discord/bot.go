@@ -122,9 +122,9 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 	bot.AddCommand("skip", "Skips the currently playing song on the radio station", (*Bot).handleSkip)
 	bot.AddCommand("nowplaying", "Shows the currently playing song on the radio station", (*Bot).handleNowPlaying)
-	bot.AddCommand("volume", "Set the volume for the current playing radio station", (*Bot).handleVolume, 
+	bot.AddCommand("volume", "Set the volume for the current playing radio station", (*Bot).handleVolume,
 		&discordgo.ApplicationCommandOption{
-			Type:        discordgo.ApplicationCommandOptionNumber,
+			Type:        discordgo.ApplicationCommandOptionInteger,
 			Name:        "level",
 			Description: "Volume level from 10 to 200 percent (default 100)",
 			Required:    true,
