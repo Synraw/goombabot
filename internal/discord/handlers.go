@@ -88,7 +88,7 @@ func (bot *Bot) requestSong(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+song.Song.Text+"**."))
+	_ = s.InteractionRespond(i.Interaction, createResponse("Requested song **"+song.Song.Title+"** by **"+song.Song.Artist+"** from the album **"+song.Song.Album+"**."))
 	deleteMessageAfter(s, i, mediumDelay)
 }
 
@@ -461,7 +461,7 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	bot.radioMutex.Lock()
 	session.Volume = float64(volume) / 100.0
 	bot.radioMutex.Unlock()
-	_ = s.InteractionRespond(i.Interaction, createResponse("Set volume to "+strconv.FormatFloat(float64(volume), 'f', -1, 64)+"%"))
+	_ = s.InteractionRespond(i.Interaction, createResponse("Set volume to "+strconv.FormatFloat(float64(session.Volume), 'f', -1, 64)+"%"))
 	deleteMessageAfter(s, i, shortDelay)
 }
 
