@@ -250,9 +250,6 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 				delete(bot.radioSessions, guildID)
 			}
 			bot.radioMutex.Unlock()
-		} else {
-			bot.Logger.Warn("spurious voice state update (channelID empty but still connected)",
-				"guild_id", vs.GuildID)
 		}
 	}
 }
