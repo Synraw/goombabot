@@ -175,8 +175,11 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		}
 	})
 
-	vc.Speaking(true)
-	defer vc.Speaking(false)
+	// Guard speaking toggles in case the voice connection drops
+	if vc != nil && vc.Ready {
+		vc.Speaking(true)
+		defer vc.Speaking(false)
+	}
 
 	// Wait for initial buffer or timeout
 	start := time.Now()
@@ -211,9 +214,11 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			return nil
 
 		case <-ticker.C:
-			// Ensure voice is ready
+			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
 			if vc == nil || vc.OpusSend == nil || !vc.Ready {
-				continue
+				close(frames)
+				wg.Wait()
+				return nil
 			}
 
 			// Get a frame if available; if not, skip this tick to prevent jitter
@@ -245,13 +250,16 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		case <-done:
 			// Source finished; drain remaining frames and exit
 			for {
+				// If the voice connection is gone or not ready, exit immediately
+				if vc == nil || vc.OpusSend == nil || !vc.Ready {
+					wg.Wait()
+					return nil
+				}
 				select {
 				case frame := <-frames:
-					if vc != nil && vc.OpusSend != nil && vc.Ready {
-						select {
-						case vc.OpusSend <- frame:
-						case <-time.After(opusSendWarnTimeout):
-						}
+					select {
+					case vc.OpusSend <- frame:
+					case <-time.After(opusSendWarnTimeout):
 					}
 				default:
 					wg.Wait()
