@@ -25,11 +25,7 @@ const (
 
 // goWait starts fn in a goroutine and tracks it with the WaitGroup.
 func goWait(wg *sync.WaitGroup, fn func()) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		fn()
-	}()
+	wg.Go(fn)
 }
 
 // Add this helper function to apply volume
