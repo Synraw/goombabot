@@ -21,9 +21,6 @@ const (
 	maxBufferFrames     = 1500                   // ~30s max to avoid excessive memory use
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
 	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
-
-	// global constants
-	DefaultVolume = 1.0 // default volume multiplier
 )
 
 // goWait starts fn in a goroutine and tracks it with the WaitGroup.

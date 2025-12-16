@@ -16,6 +16,9 @@ const (
 	mediumDelay = 15 * time.Second
 	longDelay   = 30 * time.Second
 	maxLabelLen = 100
+	DefaultVolume = 1.0 // default volume multiplier
+	VolumeMin   = 5
+	VolumeMax   = 200
 )
 
 // truncateLabel ensures select option labels meet Discord's 1–100 char limit.
@@ -496,8 +499,8 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	if volumeVal < 5 || volumeVal > 200 {
-		bot.NewResponseBuilder(s, i).Error("Volume must be between 5 and 200.", nil, shortDelay)
+	if volumeVal < VolumeMin || volumeVal > VolumeMax {
+		bot.NewResponseBuilder(s, i).Error("Volume must be between "+strconv.Itoa(VolumeMin)+" and "+strconv.Itoa(VolumeMax)+".", nil, shortDelay)
 		return
 	}
 

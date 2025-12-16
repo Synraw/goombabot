@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -126,7 +127,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionInteger,
 			Name:        "level",
-			Description: "Volume level from 10 to 200 percent (default 100)",
+			Description: "Volume level from " + strconv.Itoa(VolumeMin) + " to " + strconv.Itoa(VolumeMax) + " percent (default "+ strconv.Itoa(int(DefaultVolume*100)) + "%)",
 			Required:    true,
 		},
 	)
