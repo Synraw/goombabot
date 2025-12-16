@@ -17,10 +17,10 @@ const (
 	pcmSampleRate       = 48000                  // Discord standard
 	pcmChannels         = 2                      // stereo
 	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
-	initialBufferFrames = 300                    // ~6s initial buffer to smooth jitter
+	initialBufferFrames = 100                    // ~2s initial buffer to smooth jitter
 	maxBufferFrames     = 1500                   // ~30s max to avoid excessive memory use
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
-	startBufferTimeout  = 6 * time.Second        // max wait for initial buffer
+	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
 
 	// global constants
 	DefaultVolume = 1.0 // default volume multiplier
