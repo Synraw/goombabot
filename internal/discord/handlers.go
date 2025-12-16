@@ -119,6 +119,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		Cancel:  cancel,
 		UserID:  i.Member.User.ID,
 		Station: &station,
+		Volume:  DefaultVolume,
 	}
 	bot.radioMutex.Unlock()
 
@@ -421,6 +422,47 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 	if err := s.InteractionRespond(i.Interaction, createResponseEx(resp)); err != nil {
 		bot.Logger.Warn("failed to send song select", "err", err)
 	}
+}
+
+// handleVolume adjusts the streaming volume for the current session.
+func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		bot.respondWithError(s, i, "Could not get guild.", err, shortDelay)
+		return
+	}
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		bot.respondWithError(s, i, "You must be in a voice channel.", nil, shortDelay)
+		return
+	}
+	if s.VoiceConnections[guild.ID] == nil {
+		bot.respondWithError(s, i, "Not connected to a voice channel.", nil, shortDelay)
+		return
+	}
+	// get current session
+	session, ok := bot.radioSessions[guild.ID]
+	if !ok {
+		bot.respondWithError(s, i, "No active radio session.", nil, shortDelay)
+		return
+	}
+	// Extract volume value
+	opts := i.ApplicationCommandData().Options
+	if len(opts) == 0 {
+		bot.respondWithError(s, i, "Volume value is required.", nil, shortDelay)
+		return
+	}
+	volume := opts[0].IntValue() // only one option for volume
+	if volume < 5 || volume > 200 {
+		bot.respondWithError(s, i, "Volume must be between 5 and 200.", nil, shortDelay)
+		return
+	}
+
+	bot.radioMutex.Lock()
+	session.Volume = float64(volume) / 100.0
+	bot.radioMutex.Unlock()
+	_ = s.InteractionRespond(i.Interaction, createResponse("Set volume to "+strconv.FormatFloat(float64(volume), 'f', -1, 64)+"%"))
+	deleteMessageAfter(s, i, shortDelay)
 }
 
 // handleComponent routes interaction component events to the appropriate handler.

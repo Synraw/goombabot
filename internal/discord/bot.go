@@ -32,6 +32,7 @@ type StreamSession struct {
 	Cancel  context.CancelFunc
 	UserID  string
 	Station *RadioStation
+	Volume  float64
 }
 
 type Bot struct {
@@ -121,6 +122,14 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 	bot.AddCommand("skip", "Skips the currently playing song on the radio station", (*Bot).handleSkip)
 	bot.AddCommand("nowplaying", "Shows the currently playing song on the radio station", (*Bot).handleNowPlaying)
+	bot.AddCommand("volume", "Set the volume for the current playing radio station", (*Bot).handleVolume, 
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionNumber,
+			Name:        "level",
+			Description: "Volume level from 10 to 200 percent (default 100)",
+			Required:    true,
+		},
+	)
 	bot.AddCommand("request", "Request a song to be played on the radio station (can show up-to 25 results to choose from)", (*Bot).handleRequest,
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionString,

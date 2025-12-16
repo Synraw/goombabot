@@ -3,6 +3,7 @@ package discord
 import (
 	"encoding/binary"
 	"io"
+	"math"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -20,6 +21,9 @@ const (
 	maxBufferFrames     = 1500                   // ~30s max to avoid excessive memory use
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
 	startBufferTimeout  = 6 * time.Second        // max wait for initial buffer
+
+	// global constants
+	DefaultVolume = 1.0 // default volume multiplier
 )
 
 // goWait starts fn in a goroutine and tracks it with the WaitGroup.
@@ -29,6 +33,21 @@ func goWait(wg *sync.WaitGroup, fn func()) {
 		defer wg.Done()
 		fn()
 	}()
+}
+
+// Add this helper function to apply volume
+func applyVolume(samples []int16, volume float64) {
+	for i := range samples {
+		// Scale sample and clamp to int16 range
+		scaled := float64(samples[i]) * volume
+		if scaled > math.MaxInt16 {
+			samples[i] = math.MaxInt16
+		} else if scaled < math.MinInt16 {
+			samples[i] = math.MinInt16
+		} else {
+			samples[i] = int16(scaled)
+		}
+	}
 }
 
 // streamRadio uses ffmpeg to decode the remote stream to raw PCM and encodes
@@ -132,6 +151,10 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				int16Buf[i] = int16(binary.LittleEndian.Uint16(pcmBuf[i*2 : i*2+2]))
 			}
 
+			// Apply volume adjustment
+			applyVolume(int16Buf, session.Volume)
+
+			// Encode to Opus
 			opus, err := enc.Encode(int16Buf, frameSamples, bytesPerFrame)
 			if err != nil {
 				close(done)
