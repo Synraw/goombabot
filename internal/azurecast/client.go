@@ -88,10 +88,12 @@ type APIError struct {
 	Body       string
 }
 
+// Error implements the error interface.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("azurecast: unexpected status %d: %s", e.StatusCode, e.Body)
 }
 
+// newRequest creates an HTTP request with the appropriate headers.
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	if ctx == nil {
 		return nil, errors.New("azurecast: context must not be nil")

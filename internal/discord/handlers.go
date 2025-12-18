@@ -327,15 +327,38 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Try to restore saved volume for this station, or use default
-	volume := DefaultVolume
-	if savedState := bot.sessionStore.Get(guild.ID); savedState != nil && savedState.StationID == station.ID {
-		volume = savedState.Volume
+	// Early guards
+	if station.StreamURL == "" {
+		bot.NewResponseBuilder(s, i).Error("Selected station has no stream URL.", nil, shortDelay)
+		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Try to restore saved volume (clamped)
+	volume := DefaultVolume
+	if saved := bot.sessionStore.Get(guild.ID); saved != nil && saved.StationID == station.ID {
+		v := saved.Volume
+		min := float64(VolumeMin) / 100.0
+		max := float64(VolumeMax) / 100.0
+		if v < min {
+			v = min
+		}
+		if v > max {
+			v = max
+		}
+		volume = v
+	}
+
+	// Optional: single-flight guard under lock
 	bot.radioMutex.Lock()
-	bot.radioSessions[guild.ID] = &StreamSession{
+	if existing := bot.radioSessions[guild.ID]; existing != nil {
+		bot.radioMutex.Unlock()
+		bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
+		return
+	}
+
+	// Create session and store once
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &StreamSession{
 		Context: ctx,
 		Cancel:  cancel,
 		GuildID: guild.ID,
@@ -343,30 +366,31 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		Station: &station,
 		Volume:  volume,
 	}
+	bot.radioSessions[guild.ID] = session
 	bot.radioMutex.Unlock()
 
-	// Persist session state
 	if err := bot.sessionStore.Set(guild.ID, station.ID, volume); err != nil {
 		bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
 	}
 
-	go func() {
+	// Start streaming in a separate goroutine
+	go func(sess *StreamSession) {
 		defer func() {
+			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 			_ = vc.Disconnect()
 			bot.radioMutex.Lock()
-			if session, ok := bot.radioSessions[guild.ID]; ok && session != nil {
-				session.Cancel()
+			if bot.radioSessions[guild.ID] == sess {
 				delete(bot.radioSessions, guild.ID)
 			}
 			bot.radioMutex.Unlock()
+			sess.Cancel()
 		}()
 
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadio(vc, bot.radioSessions[guild.ID]); err != nil {
+		if err := bot.streamRadio(vc, sess); err != nil {
 			bot.Logger.Error("streaming error", "err", err)
 		}
-		bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
-	}()
+	}(session)
 
 	bot.NewResponseBuilder(s, i).Success("Starting radio: **"+station.Name+"**", shortDelay)
 }

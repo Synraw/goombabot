@@ -181,7 +181,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				bot.Logger.Debug("producing frames", "guild_id", session.GuildID, "frames_read", framesRead)
 			}
 
-			for i := 0; i < samplesPerFrame; i++ {
+			for i := range samplesPerFrame {
 				int16Buf[i] = int16(binary.LittleEndian.Uint16(pcmBuf[i*2 : i*2+2]))
 			}
 
