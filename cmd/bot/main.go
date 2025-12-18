@@ -22,6 +22,8 @@ import (
 
 func main() {
 	// Open log file for writing (create if doesn't exist, append if does)
+	// Ensure logs directory exists
+	_ = os.MkdirAll("./logs", 0755)
 	logFile, err := os.OpenFile("./logs/goombabot.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("Failed to open log file: %v", err)
