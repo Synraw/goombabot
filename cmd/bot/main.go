@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -20,8 +21,18 @@ import (
 )
 
 func main() {
+	// Open log file for writing (create if doesn't exist, append if does)
+	logFile, err := os.OpenFile("goombabot.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer logFile.Close()
+
+	// Create a multi-writer that writes to both stdout and file
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+
 	// Setup logging (both slog & log global loggers can be used)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(multiWriter, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	slog.SetDefault(logger)
