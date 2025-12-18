@@ -127,7 +127,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionInteger,
 			Name:        "level",
-			Description: "Volume level from " + strconv.Itoa(VolumeMin) + " to " + strconv.Itoa(VolumeMax) + " percent (default "+ strconv.Itoa(int(DefaultVolume*100)) + "%)",
+			Description: "Volume level from " + strconv.Itoa(VolumeMin) + " to " + strconv.Itoa(VolumeMax) + " percent (default " + strconv.Itoa(int(DefaultVolume*100)) + "%)",
 			Required:    true,
 		},
 	)
@@ -246,8 +246,8 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 		return
 	}
 
+	// Check if the bot has disconnected from the voice channel
 	if vs.ChannelID == "" {
-		// Verify bot is actually disconnected by checking voice connection
 		vc, hasVoiceConn := s.VoiceConnections[vs.GuildID]
 		if !hasVoiceConn || vc == nil {
 			guildID := vs.GuildID

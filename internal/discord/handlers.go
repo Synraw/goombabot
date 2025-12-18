@@ -18,7 +18,7 @@ const (
 	maxLabelLen   = 100
 	DefaultVolume = 1.0 // default volume multiplier
 	VolumeMin     = 5
-	VolumeMax     = 200
+	VolumeMax     = 500
 )
 
 // truncateLabel ensures select option labels meet Discord's 1–100 char limit.
