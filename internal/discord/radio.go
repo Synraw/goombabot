@@ -60,15 +60,18 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		afiltergraph = "aresample=async=1:min_hard_comp=0.1:first_pts=0"
 	}
 
-	// Build ffmpeg arguments
+	// Build ffmpeg arguments with enhanced reliability flags
 	args := []string{
 		"-loglevel", "warning",
+		"-rw_timeout", "15000000",
 		"-thread_queue_size", "512",
 		"-i", session.Station.StreamURL,
 		"-reconnect", "1",
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
-		"-fflags", "+genpts",
+		"-reconnect_at_eof", "1",
+		"-reconnect_on_network_error", "1",
+		"-fflags", "+nobuffer+genpts",
 		"-vn",
 		"-af", afiltergraph,
 		"-ac", "2",
@@ -78,7 +81,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	// Platform-specific optimizations
 	if runtime.GOOS == "linux" {
 		args = append(args,
-			"-fflags", "+nobuffer+genpts",
 			"-thread_queue_size", "256",
 			"-buffer_size", "2M",
 		)
@@ -130,7 +132,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		return err
 	}
 
-	// Set encoder parameters
+	// Set encoder parameters optimized for music
 	enc.SetBitrate(128000)
 	enc.SetVbr(false)
 

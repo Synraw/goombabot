@@ -260,7 +260,6 @@ func (b *Bot) restoreGuildSession(guildID string) {
 	station, ok := b.radioStations[savedState.StationID]
 	if !ok {
 		b.Logger.Warn("saved station no longer available", "guild_id", guildID, "station_id", savedState.StationID)
-		// Clean up stale entry
 		_ = b.sessionStore.Delete(guildID)
 		return
 	}
