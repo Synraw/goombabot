@@ -5,3 +5,7 @@ services:
     network_mode: host
     env_file:
       - .env
+    volumes:
+      - ./goombabot.log:/app/server/goombabot.log
+      - ./data:/app/server/data
+    working_dir: /app/server
