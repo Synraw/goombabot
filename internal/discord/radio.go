@@ -19,7 +19,7 @@ const (
 	pcmChannels         = 2                      // stereo
 	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
 	initialBufferFrames = 100                    // ~2s initial buffer to smooth jitter
-	maxBufferFrames     = 1500                   // ~30s max to avoid excessive memory use
+	maxBufferFrames     = 500                    // ~10s max to avoid excessive memory use
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
 	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
 )
@@ -150,9 +150,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 
-	// Producer: read PCM frames and encode to Opus
 	wg.Go(func() {
-		defer close(frames) // Ensure frames is closed when producer exits
+		defer close(frames)
+		// Producer: read PCM frames and encode to Opus
 		pcmBuf := make([]byte, bytesPerFrame)
 		int16Buf := make([]int16, samplesPerFrame)
 		framesRead := 0
@@ -276,6 +276,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
 			if vc == nil || vc.OpusSend == nil || !vc.Ready {
 				bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
+				if session.Cancel != nil {
+					session.Cancel() // stop producer and ffmpeg
+				}
 				wg.Wait()
 				return nil
 			}
@@ -330,6 +333,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				// If the voice connection is gone or not ready, exit immediately
 				if vc == nil || vc.OpusSend == nil || !vc.Ready {
 					bot.Logger.Info("voice connection lost during drain", "guild_id", session.GuildID, "frames_sent", framesSent)
+					if session.Cancel != nil {
+						session.Cancel()
+					}
 					wg.Wait()
 					return nil
 				}
