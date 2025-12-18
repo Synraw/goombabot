@@ -327,6 +327,12 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	// Try to restore saved volume for this station, or use default
+	volume := DefaultVolume
+	if savedState := bot.sessionStore.Get(guild.ID); savedState != nil && savedState.StationID == station.ID {
+		volume = savedState.Volume
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	bot.radioMutex.Lock()
 	bot.radioSessions[guild.ID] = &StreamSession{
@@ -334,9 +340,14 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		Cancel:  cancel,
 		UserID:  i.Member.User.ID,
 		Station: &station,
-		Volume:  DefaultVolume,
+		Volume:  volume,
 	}
 	bot.radioMutex.Unlock()
+
+	// Persist session state
+	if err := bot.sessionStore.Set(guild.ID, station.ID, volume); err != nil {
+		bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
+	}
 
 	go func() {
 		defer func() {
@@ -512,7 +523,13 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	bot.radioMutex.Lock()
 	oldVolume := int(vc.Session.Volume * 100)
 	vc.Session.Volume = float64(volumeVal) / 100.0
+	stationID := vc.Session.Station.ID
 	bot.radioMutex.Unlock()
+
+	// Persist volume change
+	if err := bot.sessionStore.Set(i.GuildID, stationID, float64(volumeVal)/100.0); err != nil {
+		bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
+	}
 
 	msg := "Set volume from " + strconv.Itoa(oldVolume) + "% to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
 	bot.NewResponseBuilder(s, i).Success(msg, shortDelay)

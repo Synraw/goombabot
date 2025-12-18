@@ -46,6 +46,7 @@ type Bot struct {
 	radioStations  map[int]RadioStation
 	radioMutex     sync.Mutex
 	radioSessions  map[string]*StreamSession
+	sessionStore   *SessionStore
 }
 
 // AddCommand adds a command definition to the bot.
@@ -73,6 +74,12 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
+	// Initialize session store
+	sessionStore, err := NewSessionStore("./data")
+	if err != nil {
+		return nil, err
+	}
+
 	bot := &Bot{
 		Token:         token,
 		Session:       sess,
@@ -81,6 +88,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 		commands:      map[string]CommandDef{},
 		radioStations: make(map[int]RadioStation),
 		radioSessions: make(map[string]*StreamSession),
+		sessionStore:  sessionStore,
 	}
 
 	// Initialize Azurecast client
@@ -233,6 +241,40 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		}
 		b.Logger.Debug("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
 	}
+
+	// Try to restore previous session if it exists
+	b.restoreGuildSession(g.ID)
+}
+
+// restoreGuildSession attempts to restore a guild's previous streaming session
+func (b *Bot) restoreGuildSession(guildID string) {
+	savedState := b.sessionStore.Get(guildID)
+	if savedState == nil {
+		return // No saved state for this guild
+	}
+
+	station, ok := b.radioStations[savedState.StationID]
+	if !ok {
+		b.Logger.Warn("saved station no longer available", "guild_id", guildID, "station_id", savedState.StationID)
+		// Clean up stale entry
+		_ = b.sessionStore.Delete(guildID)
+		return
+	}
+
+	b.Logger.Info("restoring previous session", "guild_id", guildID, "station", station.Name, "volume", savedState.Volume*100)
+
+	// Create a restored session (but don't auto-join voice - let user start it)
+	// Just set it up so when they use /radio again, it remembers their settings
+	ctx, cancel := context.WithCancel(context.Background())
+	b.radioMutex.Lock()
+	b.radioSessions[guildID] = &StreamSession{
+		Context: ctx,
+		Cancel:  cancel,
+		UserID:  "", // Will be set when user actually starts playback
+		Station: &station,
+		Volume:  savedState.Volume,
+	}
+	b.radioMutex.Unlock()
 }
 
 // onGuildDelete handles guild deletion events.
