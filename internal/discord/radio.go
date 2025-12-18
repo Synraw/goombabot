@@ -124,6 +124,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 	// Producer: read PCM frames and encode to Opus
 	goWait(&wg, func() {
+		defer close(frames) // Ensure frames is closed when producer exits
 		pcmBuf := make([]byte, bytesPerFrame)
 		int16Buf := make([]int16, samplesPerFrame)
 
@@ -188,7 +189,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	for len(frames) < initialBufferFrames {
 		select {
 		case <-session.Context.Done():
-			close(frames)
 			wg.Wait()
 			return nil
 		case <-done:
@@ -211,24 +211,33 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	for {
 		select {
 		case <-session.Context.Done():
-			close(frames)
 			wg.Wait()
 			return nil
 
 		case <-ticker.C:
 			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
 			if vc == nil || vc.OpusSend == nil || !vc.Ready {
-				close(frames)
 				wg.Wait()
 				return nil
 			}
 
 			// Get a frame if available; if not, skip this tick to prevent jitter
-			var frame []byte
 			select {
-			case frame = <-frames:
+			case frame, ok := <-frames:
+				if !ok {
+					// frames channel closed, producer finished
+					wg.Wait()
+					return nil
+				}
 				emptyCount = 0
 				framesSent++
+
+				// Send with timeout
+				select {
+				case vc.OpusSend <- frame:
+				case <-time.After(opusSendWarnTimeout):
+					bot.Logger.Warn("opus send delayed; Discord backpressure")
+				}
 			default:
 				emptyCount++
 				skippedFrames++
@@ -242,13 +251,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				continue
 			}
 
-			// Send with timeout
-			select {
-			case vc.OpusSend <- frame:
-			case <-time.After(opusSendWarnTimeout):
-				bot.Logger.Warn("opus send delayed; Discord backpressure")
-			}
-
 		case <-done:
 			// Source finished; drain remaining frames and exit
 			for {
@@ -258,7 +260,12 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 					return nil
 				}
 				select {
-				case frame := <-frames:
+				case frame, ok := <-frames:
+					if !ok {
+						// frames channel closed
+						wg.Wait()
+						return nil
+					}
 					select {
 					case vc.OpusSend <- frame:
 					case <-time.After(opusSendWarnTimeout):
