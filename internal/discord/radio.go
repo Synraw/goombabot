@@ -23,11 +23,6 @@ const (
 	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
 )
 
-// goWait starts fn in a goroutine and tracks it with the WaitGroup.
-func goWait(wg *sync.WaitGroup, fn func()) {
-	wg.Go(fn)
-}
-
 // Add this helper function to apply volume
 func applyVolume(samples []int16, volume float64) {
 	for i := range samples {
@@ -123,7 +118,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	done := make(chan struct{})
 
 	// Producer: read PCM frames and encode to Opus
-	goWait(&wg, func() {
+	wg.Go(func() {
 		defer close(frames) // Ensure frames is closed when producer exits
 		pcmBuf := make([]byte, bytesPerFrame)
 		int16Buf := make([]int16, samplesPerFrame)
@@ -241,9 +236,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			default:
 				emptyCount++
 				skippedFrames++
-				// Log underruns less frequently (WSL2 jitter may cause frequent ones)
+				// Log underruns less frequently
 				if emptyCount%200 == 0 {
-					bot.Logger.Warn("audio buffer underrun (WSL2 jitter)",
+					bot.Logger.Warn("audio buffer underrun; skipping frame",
 						"frames_queued", len(frames),
 						"frames_sent", framesSent,
 						"skipped", skippedFrames)
