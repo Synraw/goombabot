@@ -6,6 +6,6 @@ services:
     env_file:
       - .env
     volumes:
-    - ./logs/goombabot.log:/app/server/goombabot.log
+    - ./logs:/app/server/logs
     - ./data:/app/server/data
     working_dir: /app/server
