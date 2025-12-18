@@ -504,6 +504,11 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
+	if volumeVal == int64(vc.Session.Volume*100) {
+		bot.NewResponseBuilder(s, i).Success("Volume is already set to "+strconv.FormatInt(int64(volumeVal), 10)+"%.", shortDelay)
+		return
+	}
+
 	bot.radioMutex.Lock()
 	oldVolume := int(vc.Session.Volume * 100)
 	vc.Session.Volume = float64(volumeVal) / 100.0

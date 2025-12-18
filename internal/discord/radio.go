@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bufio"
 	"encoding/binary"
 	"io"
 	"math"
@@ -91,9 +92,22 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	if err != nil {
 		return err
 	}
+	stderr, err := cmd.StderrPipe() // Capture stderr
+	if err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
+	// Log stderr in a separate goroutine
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			bot.Logger.Warn("ffmpeg", "stderr", scanner.Text())
+		}
+	}()
+
 	defer func() { _ = cmd.Wait() }()
 
 	// Opus encoder setup
