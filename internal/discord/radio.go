@@ -50,14 +50,8 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	}
 
 	var afiltergraph string
-	var extraArgs []string
 	if runtime.GOOS == "linux" {
 		afiltergraph = "aresample=48000"
-		extraArgs = []string{
-			"-fflags", "+nobuffer+genpts",
-			"-thread_queue_size", "256",
-			"-buffer_size", "2M",
-		}
 	} else {
 		// Windows: async resampler smooths timing
 		afiltergraph = "aresample=async=1:min_hard_comp=0.1:first_pts=0"
@@ -72,30 +66,37 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		"-reconnect_delay_max", "5",
 		"-fflags", "+genpts",
 		"-vn",
-		// Audio conditioning: use OS-specific resampler config
 		"-af", afiltergraph,
 		"-ac", "2",
 		"-ar", "48000",
+	}
+
+	if runtime.GOOS == "linux" {
+		args = append(args,
+			"-fflags", "+nobuffer+genpts",
+			"-thread_queue_size", "256",
+			"-buffer_size", "2M",
+		)
+	}
+
+	args = append(args,
 		"-f", "s16le",
 		"-acodec", "pcm_s16le",
 		"pipe:1",
-	}
+	)
 
-	// Add Linux-specific ffmpeg optimizations
-	if runtime.GOOS == "linux" {
-		args = append(args[:len(args)-1], extraArgs...)
-		args = append(args, "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1")
-	}
-
+	// Create ffmpeg command
 	cmd := exec.CommandContext(session.Context, ffmpegBin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	stderr, err := cmd.StderrPipe() // Capture stderr
+	// Capture stderr for logging
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
 	}
+	// Start ffmpeg process
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -108,6 +109,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		}
 	}()
 
+	// Ensure ffmpeg process is cleaned up
 	defer func() { _ = cmd.Wait() }()
 
 	// Opus encoder setup
@@ -116,6 +118,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		return err
 	}
 
+	// Set encoder parameters
 	enc.SetBitrate(128000)
 	enc.SetVbr(false)
 
@@ -124,9 +127,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	samplesPerFrame := frameSamples * pcmChannels            // 1920 samples total
 	bytesPerFrame := samplesPerFrame * 2                     // s16le: 2 bytes per sample
 
-	// Read directly from stdout without Go buffering; ffmpeg's -fflags +nobuffer
-	// ensures it flushes immediately. Buffering layer here would reintroduce stalls.
-
+	// Buffered channel to hold encoded Opus frames
 	frames := make(chan []byte, maxBufferFrames)
 	var wg sync.WaitGroup
 	done := make(chan struct{})
