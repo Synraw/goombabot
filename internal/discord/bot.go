@@ -21,32 +21,36 @@ type CommandDef struct {
 	Handle  CommandHandler
 }
 
+// RadioStation represents a radio station fetched from Azurecast
 type RadioStation struct {
-	ID        int
-	Name      string
-	StreamURL string
-	IsOpus    bool
+	ID        int    // unique station ID
+	Name      string // station name
+	StreamURL string // URL to stream the station
+	IsOpus    bool   // whether the stream is in Opus format
 }
 
+// StreamSession represents an active radio streaming session in a guild
 type StreamSession struct {
-	Context context.Context
-	Cancel  context.CancelFunc
-	UserID  string
-	Station *RadioStation
-	Volume  float64
+	Context context.Context    // context for managing the stream lifecycle
+	Cancel  context.CancelFunc // function to cancel the stream
+	UserID  string             // ID of the user who initiated the stream
+	Station *RadioStation      // the radio station being streamed
+	GuildID string             // ID of the guild where the stream is playing
+	Volume  float64            // volume level (0.0 to 1.0)
 }
 
+// Bot represents the Discord bot instance
 type Bot struct {
-	Token          string
-	Session        *discordgo.Session
-	Logger         *slog.Logger
-	commands       map[string]CommandDef
-	config         *config.Config
-	azureApiClient *azurecast.Client
-	radioStations  map[int]RadioStation
-	radioMutex     sync.Mutex
-	radioSessions  map[string]*StreamSession
-	sessionStore   *SessionStore
+	Token          string                    // Discord bot token
+	Session        *discordgo.Session        // Discord session
+	Logger         *slog.Logger              // structured logger
+	commands       map[string]CommandDef     // registered commands
+	config         *config.Config            // bot configuration
+	azureApiClient *azurecast.Client         // Azurecast API client
+	radioStations  map[int]RadioStation      // available radio stations
+	radioMutex     sync.Mutex                // mutex for radio session access
+	radioSessions  map[string]*StreamSession // active radio sessions by guild ID
+	sessionStore   *SessionStore             // persistent session store
 }
 
 // AddCommand adds a command definition to the bot.
@@ -270,6 +274,7 @@ func (b *Bot) restoreGuildSession(guildID string) {
 	b.radioSessions[guildID] = &StreamSession{
 		Context: ctx,
 		Cancel:  cancel,
+		GuildID: guildID,
 		UserID:  "", // Will be set when user actually starts playback
 		Station: &station,
 		Volume:  savedState.Volume,

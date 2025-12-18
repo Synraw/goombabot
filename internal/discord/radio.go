@@ -43,6 +43,8 @@ func applyVolume(samples []int16, volume float64) {
 // it to Opus frames with gopus, sending directly to Discord. This keeps the
 // pipeline simple and avoids custom Ogg parsing and large buffering.
 func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSession) error {
+	bot.Logger.Info("starting radio stream", "guild_id", session.GuildID, "station", session.Station.Name)
+
 	// Prepare ffmpeg command to output signed 16-bit little-endian PCM at 48kHz stereo
 	ffmpegBin := "ffmpeg"
 	if runtime.GOOS == "windows" {
@@ -51,12 +53,14 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 	var afiltergraph string
 	if runtime.GOOS == "linux" {
+		// Linux: simple resampler
 		afiltergraph = "aresample=48000"
 	} else {
 		// Windows: async resampler smooths timing
 		afiltergraph = "aresample=async=1:min_hard_comp=0.1:first_pts=0"
 	}
 
+	// Build ffmpeg arguments
 	args := []string{
 		"-loglevel", "warning",
 		"-thread_queue_size", "512",
@@ -71,6 +75,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		"-ar", "48000",
 	}
 
+	// Platform-specific optimizations
 	if runtime.GOOS == "linux" {
 		args = append(args,
 			"-fflags", "+nobuffer+genpts",
@@ -79,6 +84,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		)
 	}
 
+	// Output settings
 	args = append(args,
 		"-f", "s16le",
 		"-acodec", "pcm_s16le",
@@ -89,23 +95,28 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	cmd := exec.CommandContext(session.Context, ffmpegBin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		bot.Logger.Error("failed to create stdout pipe", "err", err)
 		return err
 	}
 	// Capture stderr for logging
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		bot.Logger.Error("failed to create stderr pipe", "err", err)
 		return err
 	}
 	// Start ffmpeg process
 	if err := cmd.Start(); err != nil {
+		bot.Logger.Error("failed to start ffmpeg", "err", err)
 		return err
 	}
+
+	bot.Logger.Debug("ffmpeg started", "guild_id", session.GuildID)
 
 	// Log stderr in a separate goroutine
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			bot.Logger.Warn("ffmpeg", "stderr", scanner.Text())
+			bot.Logger.Warn("ffmpeg", "guild_id", session.GuildID, "message", scanner.Text())
 		}
 	}()
 
@@ -115,6 +126,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	// Opus encoder setup
 	enc, err := gopus.NewEncoder(pcmSampleRate, pcmChannels, gopus.Audio)
 	if err != nil {
+		bot.Logger.Error("failed to create opus encoder", "err", err)
 		return err
 	}
 
@@ -127,6 +139,12 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	samplesPerFrame := frameSamples * pcmChannels            // 1920 samples total
 	bytesPerFrame := samplesPerFrame * 2                     // s16le: 2 bytes per sample
 
+	bot.Logger.Debug("frame parameters",
+		"guild_id", session.GuildID,
+		"frame_samples", frameSamples,
+		"samples_per_frame", samplesPerFrame,
+		"bytes_per_frame", bytesPerFrame)
+
 	// Buffered channel to hold encoded Opus frames
 	frames := make(chan []byte, maxBufferFrames)
 	var wg sync.WaitGroup
@@ -137,18 +155,30 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		defer close(frames) // Ensure frames is closed when producer exits
 		pcmBuf := make([]byte, bytesPerFrame)
 		int16Buf := make([]int16, samplesPerFrame)
+		framesRead := 0
 
 		for {
 			select {
 			case <-session.Context.Done():
+				bot.Logger.Debug("producer context cancelled", "guild_id", session.GuildID, "frames_read", framesRead)
 				return
 			default:
 			}
 
 			// Read exactly one Opus frame worth of PCM; context cancellation kills ffmpeg so read returns
 			if _, err := io.ReadFull(stdout, pcmBuf); err != nil {
+				if err != io.EOF {
+					bot.Logger.Debug("pcm read error", "guild_id", session.GuildID, "err", err, "frames_read", framesRead)
+				} else {
+					bot.Logger.Debug("pcm stream ended", "guild_id", session.GuildID, "frames_read", framesRead)
+				}
 				close(done)
 				return
+			}
+
+			framesRead++
+			if framesRead%250 == 0 {
+				bot.Logger.Debug("producing frames", "guild_id", session.GuildID, "frames_read", framesRead)
 			}
 
 			for i := 0; i < samplesPerFrame; i++ {
@@ -161,6 +191,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			// Encode to Opus
 			opus, err := enc.Encode(int16Buf, frameSamples, bytesPerFrame)
 			if err != nil {
+				bot.Logger.Error("opus encode failed", "guild_id", session.GuildID, "err", err)
 				close(done)
 				return
 			}
@@ -175,6 +206,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				case <-session.Context.Done():
 					return
 				case <-frames:
+					bot.Logger.Warn("buffer full, dropped oldest frame", "guild_id", session.GuildID, "queued", len(frames))
 				default:
 				}
 				select {
@@ -183,6 +215,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				case frames <- opus:
 				default:
 					// Buffer still congested; skip frame
+					bot.Logger.Warn("buffer full, skipping frame", "guild_id", session.GuildID, "queued", len(frames))
 				}
 			}
 		}
@@ -190,24 +223,37 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 	// Guard speaking toggles in case the voice connection drops
 	if vc != nil && vc.Ready {
+		bot.Logger.Debug("setting speaking to true", "guild_id", session.GuildID)
 		vc.Speaking(true)
-		defer vc.Speaking(false)
+		defer func() {
+			bot.Logger.Debug("setting speaking to false", "guild_id", session.GuildID)
+			vc.Speaking(false)
+		}()
+	} else {
+		bot.Logger.Warn("voice connection not ready or nil", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_ready", vc != nil && vc.Ready)
 	}
 
 	// Wait for initial buffer or timeout
 	start := time.Now()
+	bufferStart := time.Now()
 	for len(frames) < initialBufferFrames {
 		select {
 		case <-session.Context.Done():
 			wg.Wait()
 			return nil
 		case <-done:
+			bot.Logger.Warn("producer finished before initial buffer filled", "guild_id", session.GuildID, "frames_buffered", len(frames), "target", initialBufferFrames)
+			wg.Wait()
+			return nil
 		case <-time.After(10 * time.Millisecond):
 		}
 		if time.Since(start) > startBufferTimeout {
+			bot.Logger.Warn("initial buffer timeout", "guild_id", session.GuildID, "frames_buffered", len(frames), "target", initialBufferFrames, "duration", time.Since(bufferStart))
 			break
 		}
 	}
+
+	bot.Logger.Info("initial buffer ready", "guild_id", session.GuildID, "frames_buffered", len(frames), "duration", time.Since(bufferStart))
 
 	// Stable pacing scheduler using ticker
 	frameDur := time.Duration(opusFrameMillis) * time.Millisecond
@@ -217,16 +263,19 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	emptyCount := 0
 	framesSent := 0
 	skippedFrames := 0
+	lastStatsTime := time.Now()
 
 	for {
 		select {
 		case <-session.Context.Done():
+			bot.Logger.Info("stream context cancelled", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 			wg.Wait()
 			return nil
 
 		case <-ticker.C:
 			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
 			if vc == nil || vc.OpusSend == nil || !vc.Ready {
+				bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
 				wg.Wait()
 				return nil
 			}
@@ -236,6 +285,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			case frame, ok := <-frames:
 				if !ok {
 					// frames channel closed, producer finished
+					bot.Logger.Info("frames channel closed, producer finished", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 					wg.Wait()
 					return nil
 				}
@@ -246,7 +296,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				select {
 				case vc.OpusSend <- frame:
 				case <-time.After(opusSendWarnTimeout):
-					bot.Logger.Warn("opus send delayed; Discord backpressure")
+					bot.Logger.Warn("opus send blocked by Discord", "guild_id", session.GuildID, "frames_sent", framesSent, "frames_queued", len(frames))
 				}
 			default:
 				emptyCount++
@@ -254,6 +304,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				// Log underruns less frequently
 				if emptyCount%200 == 0 {
 					bot.Logger.Warn("audio buffer underrun; skipping frame",
+						"guild_id", session.GuildID,
 						"frames_queued", len(frames),
 						"frames_sent", framesSent,
 						"skipped", skippedFrames)
@@ -261,11 +312,24 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				continue
 			}
 
+			// Log stats periodically
+			if time.Since(lastStatsTime) > 5*time.Second {
+				bot.Logger.Info("stream stats",
+					"guild_id", session.GuildID,
+					"frames_sent", framesSent,
+					"frames_queued", len(frames),
+					"skipped", skippedFrames,
+					"empty_count", emptyCount)
+				lastStatsTime = time.Now()
+			}
+
 		case <-done:
 			// Source finished; drain remaining frames and exit
+			bot.Logger.Info("source finished, draining remaining frames", "guild_id", session.GuildID, "frames_sent", framesSent)
 			for {
 				// If the voice connection is gone or not ready, exit immediately
 				if vc == nil || vc.OpusSend == nil || !vc.Ready {
+					bot.Logger.Info("voice connection lost during drain", "guild_id", session.GuildID, "frames_sent", framesSent)
 					wg.Wait()
 					return nil
 				}
@@ -273,12 +337,14 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				case frame, ok := <-frames:
 					if !ok {
 						// frames channel closed
+						bot.Logger.Info("stream finished and drained", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 						wg.Wait()
 						return nil
 					}
 					select {
 					case vc.OpusSend <- frame:
 					case <-time.After(opusSendWarnTimeout):
+						bot.Logger.Warn("opus send delayed during drain")
 					}
 				default:
 					wg.Wait()

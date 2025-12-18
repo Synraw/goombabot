@@ -338,6 +338,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	bot.radioSessions[guild.ID] = &StreamSession{
 		Context: ctx,
 		Cancel:  cancel,
+		GuildID: guild.ID,
 		UserID:  i.Member.User.ID,
 		Station: &station,
 		Volume:  volume,
