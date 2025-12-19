@@ -18,10 +18,12 @@ const (
 	pcmSampleRate       = 48000                  // Discord standard
 	pcmChannels         = 2                      // stereo
 	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
-	initialBufferFrames = 100                    // ~2s initial buffer to smooth jitter
-	maxBufferFrames     = 500                    // ~10s max to avoid excessive memory use
+	initialBufferFrames = 50                     // ~1s initial buffer (reduced to start faster)
+	maxBufferFrames     = 250                    // ~5s max (reduced to avoid Discord blocking)
+	opusSendTimeout     = 100 * time.Millisecond // timeout for opus send to avoid blocking
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
 	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
+	connCheckInterval   = 100 * time.Millisecond // check connection health interval
 )
 
 // Add this helper function to apply volume
@@ -43,7 +45,7 @@ func applyVolume(samples []int16, volume float64) {
 // it to Opus frames with gopus, sending directly to Discord. This keeps the
 // pipeline simple and avoids custom Ogg parsing and large buffering.
 func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSession) error {
-	bot.Logger.Info("starting radio stream", "guild_id", session.GuildID, "station", session.Station.Name)
+	bot.Logger.Debug("starting radio stream", "guild_id", session.GuildID, "station", session.Station.Name)
 
 	// Prepare ffmpeg command to output signed 16-bit little-endian PCM at 48kHz stereo
 	ffmpegBin := "ffmpeg"
@@ -255,7 +257,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		}
 	}
 
-	bot.Logger.Info("initial buffer ready", "guild_id", session.GuildID, "frames_buffered", len(frames), "duration", time.Since(bufferStart))
+	bot.Logger.Debug("initial buffer ready", "guild_id", session.GuildID, "frames_buffered", len(frames), "duration", time.Since(bufferStart))
 
 	// Stable pacing scheduler using ticker
 	frameDur := time.Duration(opusFrameMillis) * time.Millisecond
@@ -270,7 +272,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	for {
 		select {
 		case <-session.Context.Done():
-			bot.Logger.Info("stream context cancelled", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
+			bot.Logger.Debug("stream context cancelled", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 			wg.Wait()
 			return nil
 
@@ -290,18 +292,48 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			case frame, ok := <-frames:
 				if !ok {
 					// frames channel closed, producer finished
-					bot.Logger.Info("frames channel closed, producer finished", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
+					bot.Logger.Debug("frames channel closed, producer finished", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 					wg.Wait()
 					return nil
 				}
 				emptyCount = 0
 				framesSent++
 
-				// Send with timeout
+				// Double-check connection before blocking send
+				if vc == nil || vc.OpusSend == nil || !vc.Ready {
+					bot.Logger.Warn("voice connection became unavailable before send", "guild_id", session.GuildID, "frames_sent", framesSent)
+					if session.Cancel != nil {
+						session.Cancel()
+					}
+					wg.Wait()
+					return nil
+				}
+
+				// Send with timeout and proper backpressure handling
 				select {
 				case vc.OpusSend <- frame:
-				case <-time.After(opusSendWarnTimeout):
-					bot.Logger.Warn("opus send blocked by Discord", "guild_id", session.GuildID, "frames_sent", framesSent, "frames_queued", len(frames))
+					// Successfully sent
+				case <-time.After(opusSendTimeout):
+					// Discord is blocking - check if connection is still valid
+					if vc == nil || vc.OpusSend == nil || !vc.Ready {
+						bot.Logger.Warn("connection lost during blocked send", "guild_id", session.GuildID, "frames_sent", framesSent)
+						if session.Cancel != nil {
+							session.Cancel()
+						}
+						wg.Wait()
+						return nil
+					}
+					// Try one more time with longer timeout before giving up
+					select {
+					case vc.OpusSend <- frame:
+						bot.Logger.Warn("opus send was blocked but recovered", "guild_id", session.GuildID, "frames_sent", framesSent, "frames_queued", len(frames))
+					case <-time.After(opusSendWarnTimeout):
+						bot.Logger.Warn("opus send blocked by Discord, dropping frame", "guild_id", session.GuildID, "frames_sent", framesSent, "frames_queued", len(frames))
+						skippedFrames++
+					}
+				case <-session.Context.Done():
+					wg.Wait()
+					return nil
 				}
 			default:
 				emptyCount++
@@ -319,7 +351,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 			// Log stats periodically
 			if time.Since(lastStatsTime) > 5*time.Second {
-				bot.Logger.Info("stream stats",
+				bot.Logger.Debug("stream stats",
 					"guild_id", session.GuildID,
 					"frames_sent", framesSent,
 					"frames_queued", len(frames),
@@ -330,11 +362,11 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 		case <-done:
 			// Source finished; drain remaining frames and exit
-			bot.Logger.Info("source finished, draining remaining frames", "guild_id", session.GuildID, "frames_sent", framesSent)
+			bot.Logger.Debug("source finished, draining remaining frames", "guild_id", session.GuildID, "frames_sent", framesSent)
 			for {
 				// If the voice connection is gone or not ready, exit immediately
 				if vc == nil || vc.OpusSend == nil || !vc.Ready {
-					bot.Logger.Info("voice connection lost during drain", "guild_id", session.GuildID, "frames_sent", framesSent)
+					bot.Logger.Debug("voice connection lost during drain", "guild_id", session.GuildID, "frames_sent", framesSent)
 					if session.Cancel != nil {
 						session.Cancel()
 					}
@@ -345,7 +377,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				case frame, ok := <-frames:
 					if !ok {
 						// frames channel closed
-						bot.Logger.Info("stream finished and drained", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
+						bot.Logger.Debug("stream finished and drained", "guild_id", session.GuildID, "frames_sent", framesSent, "skipped", skippedFrames)
 						wg.Wait()
 						return nil
 					}

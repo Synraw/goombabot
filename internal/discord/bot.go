@@ -122,7 +122,7 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 			}
 		}
 
-		bot.Logger.Info("station found", "name", station.Name, "id", station.ID)
+		bot.Logger.Debug("station found", "name", station.Name, "id", station.ID)
 		bot.radioStations[station.ID] = RadioStation{
 			ID:        station.ID,
 			Name:      station.Name,
@@ -162,7 +162,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	}
 
 	b.RegisterCommands()
-	b.Logger.Debug("Discord bot started")
+	b.Logger.Info("Discord bot started")
 	defer b.Session.Close()
 
 	stop := make(chan os.Signal, 1)
@@ -264,7 +264,7 @@ func (b *Bot) restoreGuildSession(guildID string) {
 		return
 	}
 
-	b.Logger.Info("restoring previous session", "guild_id", guildID, "station", station.Name, "volume", savedState.Volume*100)
+	b.Logger.Debug("restoring previous session", "guild_id", guildID, "station", station.Name, "volume", savedState.Volume*100)
 
 	// Create a restored session (but don't auto-join voice - let user start it)
 	// Just set it up so when they use /radio again, it remembers their settings
