@@ -23,7 +23,6 @@ const (
 	opusSendTimeout     = 100 * time.Millisecond // timeout for opus send to avoid blocking
 	opusSendWarnTimeout = 200 * time.Millisecond // warn if send blocks this long
 	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
-	connCheckInterval   = 100 * time.Millisecond // check connection health interval
 )
 
 // Add this helper function to apply volume
