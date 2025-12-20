@@ -263,7 +263,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	emptyCount := 0
 	framesSent := 0
 	skippedFrames := 0
-	lastStatsTime := time.Now()
 
 	for {
 		select {
@@ -343,17 +342,6 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 						"skipped", skippedFrames)
 				}
 				continue
-			}
-
-			// Log stats periodically
-			if time.Since(lastStatsTime) > 5*time.Second {
-				bot.Logger.Debug("stream stats",
-					"guild_id", session.GuildID,
-					"frames_sent", framesSent,
-					"frames_queued", len(frames),
-					"skipped", skippedFrames,
-					"empty_count", emptyCount)
-				lastStatsTime = time.Now()
 			}
 
 		case <-done:
