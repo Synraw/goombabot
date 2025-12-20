@@ -379,7 +379,6 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		volume = v
 	}
 
-	// Optional: single-flight guard under lock
 	bot.radioMutex.Lock()
 	if existing := bot.radioSessions[guild.ID]; existing != nil {
 		bot.radioMutex.Unlock()
