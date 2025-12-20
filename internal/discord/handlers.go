@@ -328,11 +328,35 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	// Before joining voice: enforce single-flight and handle stale session
+	bot.radioMutex.Lock()
+	if existing := bot.radioSessions[guild.ID]; existing != nil {
+		// If we already have a session and voice is ready, bail out
+		if c := s.VoiceConnections[guild.ID]; c != nil && c.Ready {
+			bot.radioMutex.Unlock()
+			bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
+			return
+		}
+		// Session exists but voice not ready ⇒ stale; remove it
+		bot.Logger.Warn("stale radio session found; cleaning up", "guild_id", guild.ID)
+		delete(bot.radioSessions, guild.ID)
+	}
+	bot.radioMutex.Unlock()
+
+	// Disconnect any stale voice connection (no session)
+	if existingVC, ok := s.VoiceConnections[guild.ID]; ok {
+		bot.Logger.Debug("disconnecting existing voice connection before rejoin", "guild_id", guild.ID)
+		_ = existingVC.Disconnect()
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	bot.Logger.Debug("joining voice", "guild_id", guild.ID, "channel_id", voiceChannelID)
 	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to join voice channel.", err, shortDelay)
 		return
 	}
+	bot.Logger.Debug("joined voice", "guild_id", guild.ID)
 
 	// Early guards
 	if station.StreamURL == "" {
@@ -396,6 +420,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		// Wait for voice connection to be ready
 		if !waitVoiceReady(vc, 5*time.Second, guild.ID, bot) {
 			bot.Logger.Error("voice connection did not become ready in time", "guild_id", guild.ID)
+			_ = vc.Disconnect()
 			return
 		}
 
@@ -430,9 +455,24 @@ func waitVoiceReady(vc *discordgo.VoiceConnection, timeout time.Duration, guildI
 
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if _, ok := s.VoiceConnections[i.GuildID]; ok && bot.radioSessions[i.GuildID] != nil {
-		bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
-		return
+	// Check for stale session or voice connection first
+	bot.radioMutex.Lock()
+	sess := bot.radioSessions[i.GuildID]
+	bot.radioMutex.Unlock()
+	vc := s.VoiceConnections[i.GuildID]
+
+	if sess != nil {
+		if vc != nil && vc.Ready {
+			bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
+			return
+		}
+		bot.Logger.Warn("clearing stale radio session; no ready voice connection", "guild_id", i.GuildID)
+		bot.radioMutex.Lock()
+		delete(bot.radioSessions, i.GuildID)
+		bot.radioMutex.Unlock()
+	} else if vc != nil && vc.Ready {
+		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", i.GuildID)
+		_ = vc.Disconnect()
 	}
 
 	if len(bot.radioStations) == 1 {
