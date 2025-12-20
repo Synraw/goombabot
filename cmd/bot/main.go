@@ -35,7 +35,7 @@ func main() {
 
 	// Setup logging (both slog & log global loggers can be used)
 	logger := slog.New(slog.NewJSONHandler(multiWriter, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
