@@ -321,6 +321,13 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	// Disconnect from any existing voice connection in this guild first
+	if existing, ok := s.VoiceConnections[guild.ID]; ok {
+		bot.Logger.Debug("disconnecting from existing voice connection", "guild_id", guild.ID)
+		_ = existing.Disconnect()
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to join voice channel.", err, shortDelay)
@@ -374,25 +381,49 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	// Start streaming in a separate goroutine
-	go func(sess *StreamSession) {
+	go func() {
 		defer func() {
 			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
 			_ = vc.Disconnect()
 			bot.radioMutex.Lock()
-			if bot.radioSessions[guild.ID] == sess {
+			if bot.radioSessions[guild.ID] == session {
 				delete(bot.radioSessions, guild.ID)
 			}
 			bot.radioMutex.Unlock()
-			sess.Cancel()
+			session.Cancel()
 		}()
 
+		// Wait for voice connection to be ready
+		if !waitVoiceReady(vc, 5*time.Second, guild.ID, bot) {
+			bot.Logger.Error("voice connection did not become ready in time", "guild_id", guild.ID)
+			return
+		}
+
 		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadio(vc, sess); err != nil {
+		if err := bot.streamRadio(vc, session); err != nil {
 			bot.Logger.Error("streaming error", "err", err)
 		}
-	}(session)
+	}()
 
 	bot.NewResponseBuilder(s, i).Success("Starting radio: **"+station.Name+"**", shortDelay)
+}
+
+// waitVoiceReady waits for the voice connection to be ready with a timeout.
+func waitVoiceReady(vc *discordgo.VoiceConnection, timeout time.Duration, guildID string, bot *Bot) bool {
+	deadline := time.Now().Add(timeout)
+	attempts := 0
+	for {
+		if vc.Ready {
+			bot.Logger.Debug("voice connection ready", "guild_id", guildID, "attempts", attempts)
+			return true
+		}
+		if time.Now().After(deadline) {
+			bot.Logger.Warn("voice connection timeout", "guild_id", guildID, "attempts", attempts, "timeout", timeout)
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+		attempts++
+	}
 }
 
 // ===== Command Handlers =====
