@@ -139,14 +139,14 @@ func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.Interact
 }
 
 // validateVoiceContextBasic validates basic voice channel connectivity without requiring an active session.
-func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate) (*VoiceContext, error) {
+func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreConnection bool) (*VoiceContext, error) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		return nil, errors.New("could not get guild")
 	}
 
 	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
+	if voiceChannelID == "" && !ignoreConnection {
 		return nil, errors.New("you must be in a voice channel")
 	}
 
@@ -491,7 +491,7 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 
 // handleStop stops the current radio stream and disconnects from voice.
 func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContextBasic(s, i)
+	vc, err := bot.validateVoiceContextBasic(s, i, true)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
