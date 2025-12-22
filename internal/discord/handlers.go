@@ -12,13 +12,15 @@ import (
 )
 
 const (
-	shortDelay    = 5 * time.Second
-	mediumDelay   = 15 * time.Second
-	longDelay     = 30 * time.Second
-	maxLabelLen   = 100
-	DefaultVolume = 1.0 // default volume multiplier
-	VolumeMin     = 5
-	VolumeMax     = 500
+	shortDelay          = 5 * time.Second        // 5 seconds
+	mediumDelay         = 15 * time.Second       // 15 seconds
+	longDelay           = 30 * time.Second       // 30 seconds
+	maxLabelLen         = 100                    // Discord select option label limit
+	DefaultVolume       = 1.0                    // 100%
+	VolumeMin           = 5                      // 5%
+	VolumeMax           = 500                    // 500%
+	maxSelectOptions    = 25                     // Discord limit
+	voiceDisconnectWait = 500 * time.Millisecond // Wait after disconnecting
 )
 
 // truncateLabel ensures select option labels meet Discord's 1–100 char limit.
@@ -76,7 +78,12 @@ func (bot *Bot) NewResponseBuilder(s *discordgo.Session, i *discordgo.Interactio
 
 // Success sends a success message and deletes it after delay.
 func (rb *ResponseBuilder) Success(msg string, delay time.Duration) {
-	_ = rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg))
+	if err := rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg)); err != nil {
+		if rb.bot.Logger != nil {
+			rb.bot.Logger.Error("failed to send success response", "err", err)
+		}
+		return
+	}
 	deleteMessageAfter(rb.session, rb.interaction, delay)
 }
 
@@ -85,7 +92,12 @@ func (rb *ResponseBuilder) Error(msg string, err error, delay time.Duration) {
 	if rb.bot.Logger != nil && err != nil {
 		rb.bot.Logger.Warn(msg, "err", err)
 	}
-	_ = rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg))
+	if respondErr := rb.session.InteractionRespond(rb.interaction.Interaction, createResponse(msg)); respondErr != nil {
+		if rb.bot.Logger != nil {
+			rb.bot.Logger.Error("failed to send error response", "err", respondErr)
+		}
+		return
+	}
 	deleteMessageAfter(rb.session, rb.interaction, delay)
 }
 
@@ -189,7 +201,7 @@ func (bot *Bot) cleanupStaleVoiceState(s *discordgo.Session, guildID string) {
 	if session == nil && vc != nil && vc.Ready {
 		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", guildID)
 		_ = vc.Disconnect()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(voiceDisconnectWait)
 	}
 }
 
@@ -228,11 +240,12 @@ func getUserVoiceChannelID(guild *discordgo.Guild, userID string) string {
 // buildStationSelectMenu creates a select menu for choosing radio stations.
 func (bot *Bot) buildStationSelectMenu() discordgo.SelectMenu {
 	minValues := 1
+	maxValues := 1
 	menu := discordgo.SelectMenu{
 		CustomID:    "radio_station_select",
 		Placeholder: "Select a station",
 		MinValues:   &minValues,
-		MaxValues:   len(bot.radioStations),
+		MaxValues:   maxValues,
 		Options:     []discordgo.SelectMenuOption{},
 	}
 
@@ -246,7 +259,6 @@ func (bot *Bot) buildStationSelectMenu() discordgo.SelectMenu {
 	return menu
 }
 
-// buildSongSelectMenu creates a select menu from a map of songs, limiting to 25 options.
 func buildSongSelectMenu(songs map[string]azurecast.StationSongRequest) discordgo.SelectMenu {
 	minValues := 1
 	menu := discordgo.SelectMenu{
@@ -259,7 +271,7 @@ func buildSongSelectMenu(songs map[string]azurecast.StationSongRequest) discordg
 
 	count := 0
 	for requestID, song := range songs {
-		if count >= 25 {
+		if count >= maxSelectOptions {
 			break
 		}
 		menu.Options = append(menu.Options, discordgo.SelectMenuOption{
@@ -338,6 +350,26 @@ func findSongByID(songs []azurecast.StationSongRequest, requestID string) *azure
 	return nil
 }
 
+func (vc *VoiceContext) StationIDString() string {
+	if vc.Session == nil || vc.Session.Station == nil {
+		return ""
+	}
+	return strconv.Itoa(vc.Session.Station.ID)
+}
+
+// clampVolume ensures volume is within valid bounds
+func clampVolume(v float64) float64 {
+	min := float64(VolumeMin) / 100.0
+	max := float64(VolumeMax) / 100.0
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 // ===== Radio Stream Logic =====
 
 // runRadioStream handles the process of joining voice and streaming the radio.
@@ -377,16 +409,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 
 	volume := DefaultVolume
 	if saved := bot.sessionStore.Get(guild.ID); saved != nil && saved.StationID == station.ID {
-		v := saved.Volume
-		min := float64(VolumeMin) / 100.0
-		max := float64(VolumeMax) / 100.0
-		if v < min {
-			v = min
-		}
-		if v > max {
-			v = max
-		}
-		volume = v
+		volume = clampVolume(saved.Volume)
 	}
 
 	bot.radioMutex.Lock()
@@ -461,25 +484,17 @@ func waitVoiceReady(vc *discordgo.VoiceConnection, timeout time.Duration, guildI
 
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Check for stale session or voice connection first
 	bot.radioMutex.Lock()
 	sess := bot.radioSessions[i.GuildID]
 	bot.radioMutex.Unlock()
 	vc := s.VoiceConnections[i.GuildID]
 
-	if sess != nil {
-		if vc != nil && vc.Ready {
-			bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
-			return
-		}
-		bot.Logger.Warn("clearing stale radio session; no ready voice connection", "guild_id", i.GuildID)
-		bot.radioMutex.Lock()
-		delete(bot.radioSessions, i.GuildID)
-		bot.radioMutex.Unlock()
-	} else if vc != nil && vc.Ready {
-		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", i.GuildID)
-		_ = vc.Disconnect()
+	if sess != nil && vc != nil && vc.Ready {
+		bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
+		return
 	}
+
+	bot.cleanupStaleVoiceState(s, i.GuildID)
 
 	if len(bot.radioStations) == 1 {
 		for _, station := range bot.radioStations {
@@ -590,7 +605,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	songMenu := buildSongSelectMenu(matchingSongs)
-	bot.NewResponseBuilder(s, i).WithComponents("Multiple songs found. Please select one (only showing the first 25):",
+	bot.NewResponseBuilder(s, i).WithComponents("Multiple songs found. Please select one (only showing the first "+strconv.Itoa(maxSelectOptions)+"):",
 		discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{songMenu},
 		},
@@ -653,12 +668,22 @@ func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCr
 func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	values := i.MessageComponentData().Values
 	if len(values) == 0 {
-		bot.NewResponseBuilder(s, i).Success("No station selected.", shortDelay)
+		bot.NewResponseBuilder(s, i).Error("No station selected.", nil, shortDelay)
 		return
 	}
 
-	stationID, _ := strconv.Atoi(values[0])
-	station := bot.radioStations[stationID]
+	stationID, err := strconv.Atoi(values[0])
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Invalid station ID.", err, shortDelay)
+		return
+	}
+
+	station, ok := bot.radioStations[stationID]
+	if !ok {
+		bot.NewResponseBuilder(s, i).Error("Station not found.", nil, shortDelay)
+		return
+	}
+
 	bot.runRadioStream(s, i, station)
 }
 
