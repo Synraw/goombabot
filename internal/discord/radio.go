@@ -48,7 +48,6 @@ func (bot *Bot) monitorVoiceHealth(vc *discordgo.VoiceConnection, session *Strea
 	for {
 		select {
 		case <-session.Context.Done():
-			bot.Logger.Debug("voice health monitor stopping", "guild_id", session.GuildID)
 			return
 		case <-ticker.C:
 			if vc == nil || !vc.Ready {
@@ -58,7 +57,6 @@ func (bot *Bot) monitorVoiceHealth(vc *discordgo.VoiceConnection, session *Strea
 				}
 				return
 			}
-			bot.Logger.Debug("voice connection healthy", "guild_id", session.GuildID)
 		}
 	}
 }
