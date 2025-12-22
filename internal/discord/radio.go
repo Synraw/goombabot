@@ -3,6 +3,7 @@ package discord
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"io"
 	"math"
 	"os/exec"
@@ -20,7 +21,8 @@ const (
 	opusFrameMillis     = 20               // 20ms frames are standard for Discord
 	initialBufferFrames = 30               // ~0.6s initial buffer to start quickly
 	maxBufferFrames     = 100              // ~2s max to keep latency low
-	opusSendTimeout     = 1 * time.Second  // reduced from 5s - if Discord can't drain in 1s, connection is bad
+	opusSendTimeout     = 1 * time.Second  // per-send timeout
+	opusRetryTimeout    = 5 * time.Second  // max time to retry before force disconnect
 	startBufferTimeout  = 3 * time.Second  // max wait for initial buffer
 	healthCheckInterval = 10 * time.Second // how often to check voice connection health
 )
@@ -238,6 +240,10 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		}()
 	} else {
 		bot.Logger.Warn("voice connection not ready or nil", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_ready", vc != nil && vc.Ready)
+		if session.Cancel != nil {
+			session.Cancel()
+		}
+		return errors.New("voice connection not ready or nil at start of stream")
 	}
 
 	// Wait for initial buffer or timeout
@@ -268,6 +274,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	defer ticker.Stop()
 
 	framesSent := 0
+	consecutiveTimeouts := 0
 
 	for {
 		select {
@@ -297,6 +304,8 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 					return nil
 				}
 				framesSent++
+				// Reset timeout counter on successful send
+				consecutiveTimeouts = 0
 
 				// Double-check connection before blocking send
 				if vc == nil || vc.OpusSend == nil || !vc.Ready {
@@ -311,36 +320,56 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				// Send with timeout and proper backpressure handling
 				select {
 				case vc.OpusSend <- frame:
-					// Successfully sent
+					// Successfully sent - no action needed
 				case <-time.After(opusSendTimeout):
-					// Add diagnostic info
+					consecutiveTimeouts++
 					bufLen := len(vc.OpusSend)
 					bufCap := cap(vc.OpusSend)
-					bot.Logger.Error("opus send timeout, voice connection degraded",
+					bot.Logger.Warn("opus send timeout, waiting for Discord to drain",
 						"guild_id", session.GuildID,
 						"frames_sent", framesSent,
+						"consecutive_timeouts", consecutiveTimeouts,
 						"opus_buffer_len", bufLen,
 						"opus_buffer_cap", bufCap,
 						"vc_ready", vc.Ready)
 
-					// Force disconnect the voice connection
-					if vc != nil {
-						bot.Logger.Debug("forcing voice disconnect due to timeout", "guild_id", session.GuildID)
-						if err := vc.Disconnect(); err != nil {
-							bot.Logger.Warn("error disconnecting voice after timeout", "guild_id", session.GuildID, "err", err)
+					// If we've had consecutive timeouts for longer than retry timeout, force disconnect
+					if consecutiveTimeouts > int(opusRetryTimeout/opusSendTimeout) {
+						bot.Logger.Error("opus send timeouts exceeded retry threshold, force disconnecting",
+							"guild_id", session.GuildID,
+							"frames_sent", framesSent,
+							"consecutive_timeouts", consecutiveTimeouts)
+
+						if vc != nil {
+							bot.Logger.Debug("forcing voice disconnect due to persistent timeouts", "guild_id", session.GuildID)
+							if err := vc.Disconnect(); err != nil {
+								bot.Logger.Warn("error disconnecting voice after persistent timeouts", "guild_id", session.GuildID, "err", err)
+							}
 						}
+
+						if session.Cancel != nil {
+							session.Cancel()
+						}
+						wg.Wait()
+						return nil
 					}
 
-					if session.Cancel != nil {
-						session.Cancel()
+					// Otherwise, just skip this frame and let Discord catch up
+					// Put the frame back into the buffer to try again later
+					select {
+					case frames <- frame:
+						bot.Logger.Debug("re-queued frame after timeout", "guild_id", session.GuildID, "consecutive_timeouts", consecutiveTimeouts)
+					default:
+						// Buffer full, drop this frame (it's old anyway)
+						bot.Logger.Debug("dropped frame due to full buffer after timeout", "guild_id", session.GuildID)
 					}
-					wg.Wait()
-					return nil
+
 				case <-session.Context.Done():
 					wg.Wait()
 					return nil
 				}
 			default:
+				// No frame available, skip this tick
 				continue
 			}
 
