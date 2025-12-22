@@ -111,14 +111,14 @@ type VoiceContext struct {
 }
 
 // validateVoiceContext validates that the user is in a voice channel with an active stream.
-func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.InteractionCreate) (*VoiceContext, error) {
+func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreUserConnection bool) (*VoiceContext, error) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		return nil, errors.New("could not get guild")
 	}
 
 	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
+	if voiceChannelID == "" && !ignoreUserConnection {
 		return nil, errors.New("you must be in a voice channel")
 	}
 
@@ -139,14 +139,14 @@ func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.Interact
 }
 
 // validateVoiceContextBasic validates basic voice channel connectivity without requiring an active session.
-func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreConnection bool) (*VoiceContext, error) {
+func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreUserConnection bool) (*VoiceContext, error) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		return nil, errors.New("could not get guild")
 	}
 
 	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" && !ignoreConnection {
+	if voiceChannelID == "" && !ignoreUserConnection {
 		return nil, errors.New("you must be in a voice channel")
 	}
 
@@ -158,6 +158,39 @@ func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.Int
 		Guild:        guild,
 		VoiceChannel: voiceChannelID,
 	}, nil
+}
+
+func (bot *Bot) validatePreJoinVoice(s *discordgo.Session, i *discordgo.InteractionCreate) (*discordgo.Guild, string, error) {
+	guild, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		return nil, "", errors.New("could not get guild")
+	}
+	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
+	if voiceChannelID == "" {
+		return nil, "", errors.New("you must be in a voice channel")
+	}
+	return guild, voiceChannelID, nil
+}
+
+func (bot *Bot) cleanupStaleVoiceState(s *discordgo.Session, guildID string) {
+	bot.radioMutex.Lock()
+	session := bot.radioSessions[guildID]
+	bot.radioMutex.Unlock()
+
+	vc := s.VoiceConnections[guildID]
+	if session != nil && (vc == nil || !vc.Ready) {
+		bot.Logger.Warn("clearing stale radio session; no ready voice connection", "guild_id", guildID)
+		bot.radioMutex.Lock()
+		delete(bot.radioSessions, guildID)
+		bot.radioMutex.Unlock()
+	}
+
+	vc = s.VoiceConnections[guildID]
+	if session == nil && vc != nil && vc.Ready {
+		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", guildID)
+		_ = vc.Disconnect()
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // ===== Option Parsing Helpers =====
@@ -309,46 +342,30 @@ func findSongByID(songs []azurecast.StationSongRequest, requestID string) *azure
 
 // runRadioStream handles the process of joining voice and streaming the radio.
 func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCreate, station RadioStation) {
-	guild, err := s.State.Guild(i.GuildID)
+	guild, voiceChannelID, err := bot.validatePreJoinVoice(s, i)
 	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Could not get guild.", err, shortDelay)
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" {
-		bot.NewResponseBuilder(s, i).Error("You must be in a voice channel.", nil, shortDelay)
+	if station.StreamURL == "" {
+		bot.NewResponseBuilder(s, i).Error("Selected station has no stream URL.", nil, shortDelay)
 		return
 	}
 
-	// Disconnect from any existing voice connection in this guild first
-	if existing, ok := s.VoiceConnections[guild.ID]; ok {
-		bot.Logger.Debug("disconnecting from existing voice connection", "guild_id", guild.ID)
-		_ = existing.Disconnect()
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// Before joining voice: enforce single-flight and handle stale session
 	bot.radioMutex.Lock()
 	if existing := bot.radioSessions[guild.ID]; existing != nil {
-		// If we already have a session and voice is ready, bail out
 		if c := s.VoiceConnections[guild.ID]; c != nil && c.Ready {
 			bot.radioMutex.Unlock()
 			bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
 			return
 		}
-		// Session exists but voice not ready ⇒ stale; remove it
 		bot.Logger.Warn("stale radio session found; cleaning up", "guild_id", guild.ID)
 		delete(bot.radioSessions, guild.ID)
 	}
 	bot.radioMutex.Unlock()
 
-	// Disconnect any stale voice connection (no session)
-	if existingVC, ok := s.VoiceConnections[guild.ID]; ok {
-		bot.Logger.Debug("disconnecting existing voice connection before rejoin", "guild_id", guild.ID)
-		_ = existingVC.Disconnect()
-		time.Sleep(500 * time.Millisecond)
-	}
+	bot.cleanupStaleVoiceState(s, guild.ID)
 
 	bot.Logger.Debug("joining voice", "guild_id", guild.ID, "channel_id", voiceChannelID)
 	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
@@ -358,13 +375,6 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 	bot.Logger.Debug("joined voice", "guild_id", guild.ID)
 
-	// Early guards
-	if station.StreamURL == "" {
-		bot.NewResponseBuilder(s, i).Error("Selected station has no stream URL.", nil, shortDelay)
-		return
-	}
-
-	// Try to restore saved volume (clamped)
 	volume := DefaultVolume
 	if saved := bot.sessionStore.Get(guild.ID); saved != nil && saved.StationID == station.ID {
 		v := saved.Volume
@@ -383,10 +393,9 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	if existing := bot.radioSessions[guild.ID]; existing != nil {
 		bot.radioMutex.Unlock()
 		bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
+		_ = vc.Disconnect()
 		return
 	}
-
-	// Create session and store once
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &StreamSession{
 		Context: ctx,
@@ -403,7 +412,6 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
 	}
 
-	// Start streaming in a separate goroutine
 	go func() {
 		defer func() {
 			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
@@ -416,7 +424,6 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 			session.Cancel()
 		}()
 
-		// Wait for voice connection to be ready
 		if !waitVoiceReady(vc, 5*time.Second, guild.ID, bot) {
 			bot.Logger.Error("voice connection did not become ready in time", "guild_id", guild.ID)
 			_ = vc.Disconnect()
@@ -511,7 +518,7 @@ func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // handleSkip skips the currently playing song on the radio station.
 func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i)
+	vc, err := bot.validateVoiceContext(s, i, false)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
@@ -533,7 +540,7 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // handleNowPlaying shows the currently playing song on the radio station.
 func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i)
+	vc, err := bot.validateVoiceContext(s, i, false)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
@@ -550,7 +557,7 @@ func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionC
 
 // handleRequest handles song requests for the radio station.
 func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i)
+	vc, err := bot.validateVoiceContext(s, i, false)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
@@ -592,7 +599,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 
 // handleVolume adjusts the streaming volume for the current session.
 func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i)
+	vc, err := bot.validateVoiceContext(s, i, false)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
@@ -663,7 +670,7 @@ func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.Inter
 		return
 	}
 
-	vc, err := bot.validateVoiceContext(s, i)
+	vc, err := bot.validateVoiceContext(s, i, false)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
