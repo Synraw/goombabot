@@ -15,16 +15,17 @@ import (
 )
 
 const (
-	pcmSampleRate       = 48000           // Discord standard
-	pcmChannels         = 2               // stereo
-	opusFrameMillis     = 20              // 20ms frames are standard for Discord
-	initialBufferFrames = 30              // ~0.6s initial buffer to start quickly
-	maxBufferFrames     = 100             // ~2s max to keep latency low
-	opusSendTimeout     = 5 * time.Second // generous timeout so Discord can drain
-	startBufferTimeout  = 3 * time.Second // max wait for initial buffer
+	pcmSampleRate       = 48000            // Discord standard
+	pcmChannels         = 2                // stereo
+	opusFrameMillis     = 20               // 20ms frames are standard for Discord
+	initialBufferFrames = 30               // ~0.6s initial buffer to start quickly
+	maxBufferFrames     = 100              // ~2s max to keep latency low
+	opusSendTimeout     = 1 * time.Second  // reduced from 5s - if Discord can't drain in 1s, connection is bad
+	startBufferTimeout  = 3 * time.Second  // max wait for initial buffer
+	healthCheckInterval = 10 * time.Second // how often to check voice connection health
 )
 
-// Add this helper function to apply volume
+// applyVolume applies volume scaling to PCM samples
 func applyVolume(samples []int16, volume float64) {
 	for i := range samples {
 		// Scale sample and clamp to int16 range
@@ -35,6 +36,29 @@ func applyVolume(samples []int16, volume float64) {
 			samples[i] = math.MinInt16
 		} else {
 			samples[i] = int16(scaled)
+		}
+	}
+}
+
+// monitorVoiceHealth periodically checks if the voice connection is healthy
+func (bot *Bot) monitorVoiceHealth(vc *discordgo.VoiceConnection, session *StreamSession) {
+	ticker := time.NewTicker(healthCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-session.Context.Done():
+			bot.Logger.Debug("voice health monitor stopping", "guild_id", session.GuildID)
+			return
+		case <-ticker.C:
+			if vc == nil || !vc.Ready {
+				bot.Logger.Warn("voice connection health check failed", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_ready", vc != nil && vc.Ready)
+				if session.Cancel != nil {
+					session.Cancel()
+				}
+				return
+			}
+			bot.Logger.Debug("voice connection healthy", "guild_id", session.GuildID)
 		}
 	}
 }
@@ -203,6 +227,9 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 		}
 	}()
 
+	// Start voice connection health monitor
+	go bot.monitorVoiceHealth(vc, session)
+
 	// Guard speaking toggles in case the voice connection drops
 	if vc != nil && vc.Ready {
 		bot.Logger.Debug("setting speaking to true", "guild_id", session.GuildID)
@@ -288,7 +315,24 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 				case vc.OpusSend <- frame:
 					// Successfully sent
 				case <-time.After(opusSendTimeout):
-					bot.Logger.Error("opus send timeout, treating as lost connection", "guild_id", session.GuildID, "frames_sent", framesSent)
+					// Add diagnostic info
+					bufLen := len(vc.OpusSend)
+					bufCap := cap(vc.OpusSend)
+					bot.Logger.Error("opus send timeout, voice connection degraded",
+						"guild_id", session.GuildID,
+						"frames_sent", framesSent,
+						"opus_buffer_len", bufLen,
+						"opus_buffer_cap", bufCap,
+						"vc_ready", vc.Ready)
+
+					// Force disconnect the voice connection
+					if vc != nil {
+						bot.Logger.Debug("forcing voice disconnect due to timeout", "guild_id", session.GuildID)
+						if err := vc.Disconnect(); err != nil {
+							bot.Logger.Warn("error disconnecting voice after timeout", "guild_id", session.GuildID, "err", err)
+						}
+					}
+
 					if session.Cancel != nil {
 						session.Cancel()
 					}
@@ -326,7 +370,12 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 					select {
 					case vc.OpusSend <- frame:
 					case <-time.After(opusSendTimeout):
-						bot.Logger.Warn("opus send timeout during drain, aborting")
+						bot.Logger.Warn("opus send timeout during drain, aborting", "guild_id", session.GuildID)
+						if vc != nil {
+							if err := vc.Disconnect(); err != nil {
+								bot.Logger.Warn("error disconnecting voice during drain timeout", "guild_id", session.GuildID, "err", err)
+							}
+						}
 						wg.Wait()
 						return nil
 					}

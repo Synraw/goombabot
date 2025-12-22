@@ -438,7 +438,17 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	go func() {
 		defer func() {
 			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
-			_ = vc.Disconnect()
+
+			// Ensure proper disconnect with error logging
+			if err := vc.Disconnect(); err != nil {
+				bot.Logger.Warn("error disconnecting voice", "guild_id", guild.ID, "err", err)
+			} else {
+				bot.Logger.Debug("voice disconnected successfully", "guild_id", guild.ID)
+			}
+
+			// Give Discord time to process disconnect
+			time.Sleep(voiceDisconnectWait)
+
 			bot.radioMutex.Lock()
 			if bot.radioSessions[guild.ID] == session {
 				delete(bot.radioSessions, guild.ID)
@@ -449,7 +459,6 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 
 		if !waitVoiceReady(vc, 5*time.Second, guild.ID, bot) {
 			bot.Logger.Error("voice connection did not become ready in time", "guild_id", guild.ID)
-			_ = vc.Disconnect()
 			return
 		}
 
@@ -539,6 +548,7 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
+	// for now, only allow the user who started the stream to skip
 	if vc.Session.UserID != i.Member.User.ID {
 		bot.NewResponseBuilder(s, i).Error("Only the user who started the stream can skip.", nil, shortDelay)
 		return
