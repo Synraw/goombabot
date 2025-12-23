@@ -287,17 +287,22 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 			return nil
 
 		case <-ticker.C:
-			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
-			if (vc == nil || vc.OpusSend == nil || !vc.Ready) && time.Since(lastReadyCheckTime) > readyCheckThreshold {
-				bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
-				if session.Cancel != nil {
-					session.Cancel() // stop producer and ffmpeg
+			// Check if connection has been not-ready for longer than threshold
+			if vc == nil || vc.OpusSend == nil || !vc.Ready {
+				if time.Since(lastReadyCheckTime) > readyCheckThreshold {
+					bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
+					if session.Cancel != nil {
+						session.Cancel()
+					}
+					wg.Wait()
+					return nil
 				}
-				wg.Wait()
-				return nil
-			} else {
-				lastReadyCheckTime = time.Now()
+				// Connection momentarily not ready, skip this frame
+				continue
 			}
+
+			// Connection is healthy, reset the timer
+			lastReadyCheckTime = time.Now()
 
 			// Get a frame if available; if not, skip this tick to prevent jitter
 			select {
