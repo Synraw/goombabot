@@ -16,16 +16,16 @@ import (
 )
 
 const (
-	pcmSampleRate       = 48000                  // Discord standard
-	pcmChannels         = 2                      // stereo
-	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
-	initialBufferFrames = 30                     // ~0.6s initial buffer to start quickly
-	maxBufferFrames     = 100                    // ~2s max to keep latency low
-	opusSendTimeout     = 1 * time.Second        // per-send timeout
-	opusRetryTimeout    = 5 * time.Second        // max time to retry before force disconnect
-	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
-	healthCheckInterval = 10 * time.Second       // how often to check voice connection health
-	readyCheckThreshold = 500 * time.Millisecond // threshold for waiting for voice connection to be ready
+	pcmSampleRate       = 48000            // Discord standard
+	pcmChannels         = 2                // stereo
+	opusFrameMillis     = 20               // 20ms frames are standard for Discord
+	initialBufferFrames = 30               // ~0.6s initial buffer to start quickly
+	maxBufferFrames     = 100              // ~2s max to keep latency low
+	opusSendTimeout     = 1 * time.Second  // per-send timeout
+	opusRetryTimeout    = 5 * time.Second  // max time to retry before force disconnect
+	startBufferTimeout  = 3 * time.Second  // max wait for initial buffer
+	healthCheckInterval = 10 * time.Second // how often to check voice connection health
+	readyCheckThreshold = 3 * time.Second  // threshold for waiting for voice connection to be ready
 )
 
 // applyVolume applies volume scaling to PCM samples
