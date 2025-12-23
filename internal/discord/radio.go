@@ -16,15 +16,16 @@ import (
 )
 
 const (
-	pcmSampleRate       = 48000            // Discord standard
-	pcmChannels         = 2                // stereo
-	opusFrameMillis     = 20               // 20ms frames are standard for Discord
-	initialBufferFrames = 30               // ~0.6s initial buffer to start quickly
-	maxBufferFrames     = 100              // ~2s max to keep latency low
-	opusSendTimeout     = 1 * time.Second  // per-send timeout
-	opusRetryTimeout    = 5 * time.Second  // max time to retry before force disconnect
-	startBufferTimeout  = 3 * time.Second  // max wait for initial buffer
-	healthCheckInterval = 10 * time.Second // how often to check voice connection health
+	pcmSampleRate       = 48000                  // Discord standard
+	pcmChannels         = 2                      // stereo
+	opusFrameMillis     = 20                     // 20ms frames are standard for Discord
+	initialBufferFrames = 30                     // ~0.6s initial buffer to start quickly
+	maxBufferFrames     = 100                    // ~2s max to keep latency low
+	opusSendTimeout     = 1 * time.Second        // per-send timeout
+	opusRetryTimeout    = 5 * time.Second        // max time to retry before force disconnect
+	startBufferTimeout  = 3 * time.Second        // max wait for initial buffer
+	healthCheckInterval = 10 * time.Second       // how often to check voice connection health
+	readyCheckThreshold = 500 * time.Millisecond // threshold for waiting for voice connection to be ready
 )
 
 // applyVolume applies volume scaling to PCM samples
@@ -177,6 +178,8 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 	producerDone := make(chan struct{})
 	var doneOnce sync.Once
 
+	lastReadyCheckTime := time.Now()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -285,13 +288,15 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 		case <-ticker.C:
 			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
-			if vc == nil || vc.OpusSend == nil || !vc.Ready {
+			if vc == nil || vc.OpusSend == nil || !vc.Ready && time.Since(lastReadyCheckTime) > readyCheckThreshold {
 				bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
 				if session.Cancel != nil {
 					session.Cancel() // stop producer and ffmpeg
 				}
 				wg.Wait()
 				return nil
+			} else {
+				lastReadyCheckTime = time.Now()
 			}
 
 			// Get a frame if available; if not, skip this tick to prevent jitter
