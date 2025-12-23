@@ -288,7 +288,7 @@ func (bot *Bot) streamRadio(vc *discordgo.VoiceConnection, session *StreamSessio
 
 		case <-ticker.C:
 			// Ensure voice is ready; if not, exit to stop gracefully on disconnect
-			if vc == nil || vc.OpusSend == nil || !vc.Ready && time.Since(lastReadyCheckTime) > readyCheckThreshold {
+			if (vc == nil || vc.OpusSend == nil || !vc.Ready) && time.Since(lastReadyCheckTime) > readyCheckThreshold {
 				bot.Logger.Warn("voice connection lost during playback", "guild_id", session.GuildID, "vc_nil", vc == nil, "vc_opussend_nil", vc != nil && vc.OpusSend == nil, "vc_ready", vc != nil && vc.Ready)
 				if session.Cancel != nil {
 					session.Cancel() // stop producer and ffmpeg
