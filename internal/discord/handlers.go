@@ -198,8 +198,8 @@ func (bot *Bot) cleanupStaleVoiceState(s *discordgo.Session, guildID string) {
 	}
 
 	vc = s.VoiceConnections[guildID]
-	if session == nil && vc != nil && vc.Ready {
-		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", guildID)
+	if session == nil && vc != nil {
+		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", guildID, "vc_ready", vc.Ready)
 		_ = vc.Disconnect()
 		time.Sleep(voiceDisconnectWait)
 	}
