@@ -490,25 +490,25 @@ func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionC
 	}
 
 	// Only works for radio streams
-	if session.Source.GetMetadata().Type != "radio" {
-		bot.NewResponseBuilder(s, i).Error("Now playing only works with radio streams.", nil, shortDelay)
+	if session.Source.GetMetadata().Type == "radio" {
+		// Get station ID from session store
+		savedState := bot.sessionStore.Get(i.GuildID)
+		if savedState == nil {
+			bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+			return
+		}
+
+		np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(savedState.StationID))
+		if err != nil {
+			bot.NewResponseBuilder(s, i).Error("Failed to get now playing information.", err, shortDelay)
+			return
+		}
+
+		bot.NewResponseBuilder(s, i).Success(formatNowPlaying(np), longDelay)
 		return
 	}
 
-	// Get station ID from session store
-	savedState := bot.sessionStore.Get(i.GuildID)
-	if savedState == nil {
-		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
-		return
-	}
-
-	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(savedState.StationID))
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Failed to get now playing information.", err, shortDelay)
-		return
-	}
-
-	bot.NewResponseBuilder(s, i).Success(formatNowPlaying(np), longDelay)
+	bot.NewResponseBuilder(s, i).Success("Now Playing **"+session.Source.GetMetadata().Title+"** by **"+session.Source.GetMetadata().Artist+"**", longDelay)
 }
 
 // handleRequest handles song requests for the radio station.
