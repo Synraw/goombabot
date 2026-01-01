@@ -338,14 +338,21 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Check if already streaming
-	bot.streamMutex.Lock()
-	if existing := bot.streamSessions[guild.ID]; existing != nil {
-		bot.streamMutex.Unlock()
-		bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
+	// Check if there's already a stream session
+	existingSession := bot.getStreamSession(guild.ID)
+	if existingSession != nil {
+		sourceType := existingSession.Source.GetMetadata().Type
+
+		// If radio is playing, prevent starting another stream
+		if sourceType == "radio" {
+			bot.NewResponseBuilder(s, i).Success("Already streaming radio. Use /stop first.", shortDelay)
+			return
+		}
+
+		// If music is playing, deny queuing radio
+		bot.NewResponseBuilder(s, i).Error("Cannot queue radio while music is playing. Please use /stop to stop the music first.", nil, shortDelay)
 		return
 	}
-	bot.streamMutex.Unlock()
 
 	bot.cleanupStaleVoiceState(s, guild.ID)
 
@@ -702,6 +709,13 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	guild, voiceChannelID, err := bot.validatePreJoinVoice(s, i)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+		return
+	}
+
+	// Check if radio is currently playing - if so, deny adding music
+	session := bot.getStreamSession(guild.ID)
+	if session != nil && session.Source.GetMetadata().Type == "radio" {
+		bot.NewResponseBuilder(s, i).Error("Cannot add music while the radio is playing. Please use /stop to stop the radio first.", nil, shortDelay)
 		return
 	}
 
