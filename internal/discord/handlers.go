@@ -781,6 +781,7 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// Build queue message
 	msg := "**Music Queue:**\n"
+	msg += fmt.Sprint("Currently playing: **", queue.Current().GetMetadata().Title, "** by ", queue.Current().GetMetadata().Artist, "\n\n")
 	items := queue.List()
 	for idx, source := range items {
 		metadata := source.GetMetadata()
