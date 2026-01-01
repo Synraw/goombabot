@@ -301,8 +301,37 @@ func (bot *Bot) startStream(guildID, voiceChannelID, userID string, source Audio
 
 	// Start streaming in a goroutine
 	go func() {
-		if err := bot.voiceStreamer.Stream(vc, session); err != nil {
-			bot.Logger.Error("stream error", "guild_id", guildID, "err", err)
+		// Loop to play through queue items
+		for {
+			if err := bot.voiceStreamer.Stream(vc, session); err != nil {
+				bot.Logger.Error("stream error", "guild_id", guildID, "err", err)
+				break
+			}
+
+			// Check if there's a next song in the queue (for music sources only)
+			sourceType := session.Source.GetMetadata().Type
+			if sourceType != "radio" {
+				queue := bot.getMusicQueue(guildID)
+				nextSource := queue.Next()
+				if nextSource == nil {
+					// Queue is empty, end streaming
+					bot.Logger.Debug("queue finished, ending stream", "guild_id", guildID)
+					break
+				}
+
+				// Update session to next source and create new context
+				session.Source = nextSource
+				ctx, cancel := context.WithCancel(context.Background())
+				session.Context = ctx
+				session.Cancel = cancel
+
+				metadata := nextSource.GetMetadata()
+				bot.Logger.Debug("playing next song from queue", "guild_id", guildID, "title", metadata.Title, "artist", metadata.Artist)
+				continue
+			}
+
+			// Radio streams don't have queues, end after stream finishes
+			break
 		}
 
 		// Clean up after streaming finishes

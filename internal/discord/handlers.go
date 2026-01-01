@@ -425,18 +425,12 @@ func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate)
 	bot.NewResponseBuilder(s, i).Success("Stopped the stream.", shortDelay)
 }
 
-// handleSkip skips the currently playing song on the radio station.
+// handleSkip skips the currently playing song on the radio station or music stream.
 func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Check if there's an active stream
 	session := bot.getStreamSession(i.GuildID)
 	if session == nil {
 		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
-		return
-	}
-
-	// Only works for radio streams
-	if session.Source.GetMetadata().Type != "radio" {
-		bot.NewResponseBuilder(s, i).Error("Skip command only works with radio streams.", nil, shortDelay)
 		return
 	}
 
@@ -446,20 +440,44 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	// Get station ID from session store
-	savedState := bot.sessionStore.Get(i.GuildID)
-	if savedState == nil {
-		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+	sourceType := session.Source.GetMetadata().Type
+
+	// Handle radio stream skip
+	if sourceType == "radio" {
+		// Get station ID from session store
+		savedState := bot.sessionStore.Get(i.GuildID)
+		if savedState == nil {
+			bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+			return
+		}
+
+		err := bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(savedState.StationID))
+		if err != nil {
+			bot.NewResponseBuilder(s, i).Error("Failed to skip the current song.", err, shortDelay)
+			return
+		}
+
+		bot.NewResponseBuilder(s, i).Success("Skipped the current song.", shortDelay)
 		return
 	}
 
-	err := bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(savedState.StationID))
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Failed to skip the current song.", err, shortDelay)
+	// Handle music stream skip (youtube, soundcloud, etc.)
+	queue := bot.getMusicQueue(i.GuildID)
+	nextSource := queue.Next()
+	if nextSource == nil {
+		bot.NewResponseBuilder(s, i).Error("No more songs in the queue.", nil, shortDelay)
+		// Cancel the current stream to stop playback
+		session.Cancel()
 		return
 	}
 
-	bot.NewResponseBuilder(s, i).Success("Skipped the current song.", shortDelay)
+	// Update the stream session to play the next source
+	session.Source = nextSource
+	// Cancel the current context to trigger the next song
+	session.Cancel()
+
+	metadata := nextSource.GetMetadata()
+	bot.NewResponseBuilder(s, i).Success(fmt.Sprintf("Skipped to: **%s** by %s", metadata.Title, metadata.Artist), shortDelay)
 }
 
 // handleNowPlaying shows the currently playing song on the radio station.
