@@ -781,9 +781,19 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// Build queue message
 	msg := "**Music Queue:**\n"
-	msg += fmt.Sprint("Currently playing: **", queue.Current().GetMetadata().Title, "** by ", queue.Current().GetMetadata().Artist, "\n\n")
+
+	current := queue.Current()
+	if current != nil {
+		msg += fmt.Sprint("Currently playing: **", current.GetMetadata().Title, "** by ", current.GetMetadata().Artist, "\n\n")
+	} else {
+		msg += "Currently playing: Nothing (queue not started)\n\n"
+	}
+
 	items := queue.List()
 	for idx, source := range items {
+		if source == nil {
+			continue
+		}
 		metadata := source.GetMetadata()
 		msg += fmt.Sprintf("%d. **%s** by %s", idx+1, metadata.Title, metadata.Artist)
 
