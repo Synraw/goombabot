@@ -693,7 +693,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		bot.NewResponseBuilder(s, i).Error("No URL provided.", nil, shortDelay)
 		return
 	}
-	url := opts[0].StringValue()
+	input := opts[0].StringValue()
 
 	// Defer response so we can take time to process
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -701,6 +701,12 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	}); err != nil {
 		bot.Logger.Error("failed to defer response", "err", err)
 		return
+	}
+
+	// If input is not a URL, treat it as a YouTube search query
+	url := input
+	if !strings.Contains(input, "://") {
+		url = "ytsearch1:" + input
 	}
 
 	// Create music source

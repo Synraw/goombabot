@@ -131,17 +131,17 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	bot.AddCommand("radio", "Play a station from your Azurecast server in the current voice channel", (*Bot).handleRadio)
 	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 	bot.AddCommand("skip", "Skips the currently playing song on the radio station", (*Bot).handleSkip)
-	bot.AddCommand("nowplaying", "Shows the currently playing song on the radio station", (*Bot).handleNowPlaying)
+	bot.AddCommand("nowplaying", "Shows the currently playing song on the current media", (*Bot).handleNowPlaying)
 	bot.AddCommand("play", "Play music from YouTube or other supported sources", (*Bot).handlePlay,
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionString,
-			Name:        "url",
-			Description: "YouTube URL or other supported source URL",
+			Name:        "query",
+			Description: "URL or a search query to play music from",
 			Required:    true,
 		},
 	)
 	bot.AddCommand("queue", "Show the current music queue", (*Bot).handleQueue)
-	bot.AddCommand("volume", "Set the volume for the current playing radio station", (*Bot).handleVolume,
+	bot.AddCommand("volume", "Set the volume for the current media", (*Bot).handleVolume,
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionInteger,
 			Name:        "level",
@@ -254,7 +254,6 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	}
 
 }
-
 
 // onGuildDelete handles guild deletion events.
 func (b *Bot) onGuildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
