@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/signal"
 	"strconv"
 	"sync"
-	"syscall"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/synraw/goombabot/internal/azurecast"
@@ -171,21 +168,14 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.Logger.Info("Discord bot started")
 	defer b.Session.Close()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-ctx.Done():
-	case <-stop:
-		b.Logger.Info("Shutting down Discord bot")
-		// Stop all active stream sessions
-		b.streamMutex.Lock()
-		for guildID, session := range b.streamSessions {
-			b.Logger.Debug("stopping stream session", "guild_id", guildID)
-			session.Cancel()
-		}
-		b.streamMutex.Unlock()
+	<-ctx.Done()
+	// Stop all active stream sessions
+	b.streamMutex.Lock()
+	for guildID, session := range b.streamSessions {
+		b.Logger.Debug("stopping stream session", "guild_id", guildID)
+		session.Cancel()
 	}
+	b.streamMutex.Unlock()
 	return nil
 }
 

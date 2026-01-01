@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -49,11 +48,7 @@ func main() {
 	}
 
 	// Verify ffmpeg is available
-	ffmpegFilename := "ffmpeg"
-	if runtime.GOOS == "windows" {
-		ffmpegFilename = ".\\ffmpeg.exe"
-	}
-	_, err = exec.LookPath(ffmpegFilename)
+	_, err = exec.LookPath("ffmpeg")
 	if err != nil {
 		log.Fatalf("ffmpeg not found in current directory or PATH: %v", err)
 	}
@@ -70,17 +65,19 @@ func main() {
 		log.Fatal("no Azurecast API key provided in AZURECAST_API_KEY env var")
 	}
 
+	// Shared shutdown context driven by OS signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Initialize Discord bot
 	bot, err := discord.New(cfg.DiscordToken, logger, cfg)
 	if err != nil {
 		log.Fatalf("Failed to create Discord bot: %v", err)
 	}
 
-	// Start the bot in a separate goroutine
+	botErr := make(chan error, 1)
 	go func() {
-		if err := bot.Start(context.Background()); err != nil {
-			log.Fatalf("Discord bot error: %v", err)
-		}
+		botErr <- bot.Start(ctx)
 	}()
 
 	// Expose prometheus metrics
@@ -89,21 +86,32 @@ func main() {
 		Addr: fmt.Sprintf(":%d", cfg.MetricsPort),
 	}
 
-	// Start HTTP server in a separate goroutine
+	srvErr := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe error: %v", err)
+			srvErr <- err
+			return
 		}
+		srvErr <- nil
 	}()
 
-	// Wait for SIGINT/SIGTERM
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var runErr error
+	select {
+	case runErr = <-botErr:
+	case runErr = <-srvErr:
+	case <-ctx.Done():
+	}
+
+	// Cancel everything and shut down HTTP server gracefully
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server Shutdown Failed:%+v", err)
+	if err := srv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server shutdown failed: %+v", err)
+	}
+
+	if runErr != nil {
+		log.Fatalf("Service error: %v", runErr)
 	}
 	log.Println("Server exited gracefully")
 }
