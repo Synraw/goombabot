@@ -715,6 +715,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to load music: " + err.Error()),
 		})
+		deleteMessageAfter(s, i, mediumDelay)
 		return
 	}
 
@@ -731,6 +732,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr(fmt.Sprintf("Added to queue: **%s** by %s (Position: %d)", metadata.Title, metadata.Artist, queue.Size())),
 		})
+		deleteMessageAfter(s, i, mediumDelay)
 		return
 	}
 
@@ -740,12 +742,14 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to start playback: " + err.Error()),
 		})
+		deleteMessageAfter(s, i, mediumDelay)
 		return
 	}
 
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: strPtr(fmt.Sprintf("Now playing: **%s** by %s", metadata.Title, metadata.Artist)),
 	})
+	deleteMessageAfter(s, i, mediumDelay)
 }
 
 // handleQueue handles the /queue command to show the music queue

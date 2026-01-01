@@ -36,8 +36,6 @@ func NewRadioSource(station *RadioStation, guildID string, logger interface {
 func (r *RadioSource) GetPCMReader(ctx context.Context) (io.Reader, error) {
 	r.logger.Debug("starting radio stream", "guild_id", r.guildID, "station", r.Station.Name)
 
-	r.logger.Debug("starting radio stream", "guild_id", r.guildID, "station", r.Station.Name)
-
 	// Prepare ffmpeg command to output signed 16-bit little-endian PCM at 48kHz stereo
 	ffmpegBin := "ffmpeg"
 	if runtime.GOOS == "windows" {
