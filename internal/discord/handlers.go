@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -115,43 +116,8 @@ func (rb *ResponseBuilder) WithComponents(msg string, components ...discordgo.Me
 
 // ===== Validation Helpers =====
 
-// VoiceContext holds validated voice channel state.
-type VoiceContext struct {
-	Guild        *discordgo.Guild
-	VoiceChannel string
-	Session      *StreamSession
-}
-
-// validateVoiceContext validates that the user is in a voice channel with an active stream.
-func (bot *Bot) validateVoiceContext(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreUserConnection bool) (*VoiceContext, error) {
-	guild, err := s.State.Guild(i.GuildID)
-	if err != nil {
-		return nil, errors.New("could not get guild")
-	}
-
-	voiceChannelID := getUserVoiceChannelID(guild, i.Member.User.ID)
-	if voiceChannelID == "" && !ignoreUserConnection {
-		return nil, errors.New("you must be in a voice channel")
-	}
-
-	if s.VoiceConnections[guild.ID] == nil {
-		return nil, errors.New("not connected to a voice channel")
-	}
-
-	session, ok := bot.radioSessions[guild.ID]
-	if !ok {
-		return nil, errors.New("no active radio session")
-	}
-
-	return &VoiceContext{
-		Guild:        guild,
-		VoiceChannel: voiceChannelID,
-		Session:      session,
-	}, nil
-}
-
 // validateVoiceContextBasic validates basic voice channel connectivity without requiring an active session.
-func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreUserConnection bool) (*VoiceContext, error) {
+func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.InteractionCreate, ignoreUserConnection bool) (*discordgo.Guild, error) {
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		return nil, errors.New("could not get guild")
@@ -166,10 +132,7 @@ func (bot *Bot) validateVoiceContextBasic(s *discordgo.Session, i *discordgo.Int
 		return nil, errors.New("not connected to a voice channel")
 	}
 
-	return &VoiceContext{
-		Guild:        guild,
-		VoiceChannel: voiceChannelID,
-	}, nil
+	return guild, nil
 }
 
 func (bot *Bot) validatePreJoinVoice(s *discordgo.Session, i *discordgo.InteractionCreate) (*discordgo.Guild, string, error) {
@@ -185,19 +148,16 @@ func (bot *Bot) validatePreJoinVoice(s *discordgo.Session, i *discordgo.Interact
 }
 
 func (bot *Bot) cleanupStaleVoiceState(s *discordgo.Session, guildID string) {
-	bot.radioMutex.Lock()
-	session := bot.radioSessions[guildID]
-	bot.radioMutex.Unlock()
-
+	session := bot.getStreamSession(guildID)
 	vc := s.VoiceConnections[guildID]
+
 	if session != nil && (vc == nil || !vc.Ready) {
-		bot.Logger.Warn("clearing stale radio session; no ready voice connection", "guild_id", guildID)
-		bot.radioMutex.Lock()
-		delete(bot.radioSessions, guildID)
-		bot.radioMutex.Unlock()
+		bot.Logger.Warn("clearing stale stream session; no ready voice connection", "guild_id", guildID)
+		bot.streamMutex.Lock()
+		delete(bot.streamSessions, guildID)
+		bot.streamMutex.Unlock()
 	}
 
-	vc = s.VoiceConnections[guildID]
 	if session == nil && vc != nil {
 		bot.Logger.Warn("disconnecting stale voice connection without session", "guild_id", guildID, "vc_ready", vc.Ready)
 		_ = vc.Disconnect()
@@ -350,13 +310,6 @@ func findSongByID(songs []azurecast.StationSongRequest, requestID string) *azure
 	return nil
 }
 
-func (vc *VoiceContext) StationIDString() string {
-	if vc.Session == nil || vc.Session.Station == nil {
-		return ""
-	}
-	return strconv.Itoa(vc.Session.Station.ID)
-}
-
 // clampVolume ensures volume is within valid bounds
 func clampVolume(v float64) float64 {
 	min := float64(VolumeMin) / 100.0
@@ -385,120 +338,50 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	bot.radioMutex.Lock()
-	if existing := bot.radioSessions[guild.ID]; existing != nil {
-		if c := s.VoiceConnections[guild.ID]; c != nil && c.Ready {
-			bot.radioMutex.Unlock()
-			bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
-			return
-		}
-		bot.Logger.Warn("stale radio session found; cleaning up", "guild_id", guild.ID)
-		delete(bot.radioSessions, guild.ID)
+	// Check if already streaming
+	bot.streamMutex.Lock()
+	if existing := bot.streamSessions[guild.ID]; existing != nil {
+		bot.streamMutex.Unlock()
+		bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
+		return
 	}
-	bot.radioMutex.Unlock()
+	bot.streamMutex.Unlock()
 
 	bot.cleanupStaleVoiceState(s, guild.ID)
 
-	bot.Logger.Debug("joining voice", "guild_id", guild.ID, "channel_id", voiceChannelID)
-	vc, err := s.ChannelVoiceJoin(guild.ID, voiceChannelID, false, true)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Failed to join voice channel.", err, shortDelay)
-		return
-	}
-	bot.Logger.Debug("joined voice", "guild_id", guild.ID)
-
+	// Get volume from saved session or use default
 	volume := DefaultVolume
 	if saved := bot.sessionStore.Get(guild.ID); saved != nil && saved.StationID == station.ID {
 		volume = clampVolume(saved.Volume)
 	}
 
-	bot.radioMutex.Lock()
-	if existing := bot.radioSessions[guild.ID]; existing != nil {
-		bot.radioMutex.Unlock()
-		bot.NewResponseBuilder(s, i).Success("Already streaming. Use /stop first.", shortDelay)
-		_ = vc.Disconnect()
+	// Create radio source
+	radioSource := NewRadioSource(&station, guild.ID, bot.Logger)
+
+	// Start streaming
+	if err := bot.startStream(guild.ID, voiceChannelID, i.Member.User.ID, radioSource, volume); err != nil {
+		bot.NewResponseBuilder(s, i).Error("Failed to start radio stream: "+err.Error(), nil, shortDelay)
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	session := &StreamSession{
-		Context: ctx,
-		Cancel:  cancel,
-		GuildID: guild.ID,
-		UserID:  i.Member.User.ID,
-		Station: &station,
-		Volume:  volume,
-	}
-	bot.radioSessions[guild.ID] = session
-	bot.radioMutex.Unlock()
 
+	// Save session state
 	if err := bot.sessionStore.Set(guild.ID, station.ID, volume); err != nil {
 		bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
 	}
 
-	go func() {
-		defer func() {
-			bot.Logger.Info("stopped streaming from station", "name", station.Name, "guild", guild.Name)
-
-			// Ensure proper disconnect with error logging
-			if err := vc.Disconnect(); err != nil {
-				bot.Logger.Warn("error disconnecting voice", "guild_id", guild.ID, "err", err)
-			} else {
-				bot.Logger.Debug("voice disconnected successfully", "guild_id", guild.ID)
-			}
-
-			// Give Discord time to process disconnect
-			time.Sleep(voiceDisconnectWait)
-
-			bot.radioMutex.Lock()
-			if bot.radioSessions[guild.ID] == session {
-				delete(bot.radioSessions, guild.ID)
-			}
-			bot.radioMutex.Unlock()
-			session.Cancel()
-		}()
-
-		if !waitVoiceReady(vc, 5*time.Second, guild.ID, bot) {
-			bot.Logger.Error("voice connection did not become ready in time", "guild_id", guild.ID)
-			return
-		}
-
-		bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
-		if err := bot.streamRadio(vc, session); err != nil {
-			bot.Logger.Error("streaming error", "err", err)
-		}
-	}()
-
+	bot.Logger.Info("started streaming from station", "url", station.StreamURL, "name", station.Name, "guild", guild.Name)
 	bot.NewResponseBuilder(s, i).Success("Starting radio: **"+station.Name+"**", shortDelay)
-}
-
-// waitVoiceReady waits for the voice connection to be ready with a timeout.
-func waitVoiceReady(vc *discordgo.VoiceConnection, timeout time.Duration, guildID string, bot *Bot) bool {
-	deadline := time.Now().Add(timeout)
-	attempts := 0
-	for {
-		if vc.Ready {
-			bot.Logger.Debug("voice connection ready", "guild_id", guildID, "attempts", attempts)
-			return true
-		}
-		if time.Now().After(deadline) {
-			bot.Logger.Warn("voice connection timeout", "guild_id", guildID, "attempts", attempts, "timeout", timeout)
-			return false
-		}
-		time.Sleep(10 * time.Millisecond)
-		attempts++
-	}
 }
 
 // ===== Command Handlers =====
 
 // handleRadio initiates the radio streaming process.
 func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	bot.radioMutex.Lock()
-	sess := bot.radioSessions[i.GuildID]
-	bot.radioMutex.Unlock()
+	// Check if already streaming using new system
+	session := bot.getStreamSession(i.GuildID)
 	vc := s.VoiceConnections[i.GuildID]
 
-	if sess != nil && vc != nil && vc.Ready {
+	if session != nil && vc != nil && vc.Ready {
 		bot.NewResponseBuilder(s, i).Success("Already streaming in a voice channel. Use /stop to stop the current stream first.", shortDelay)
 		return
 	}
@@ -520,41 +403,57 @@ func (bot *Bot) handleRadio(s *discordgo.Session, i *discordgo.InteractionCreate
 	)
 }
 
-// handleStop stops the current radio stream and disconnects from voice.
+// handleStop stops the current stream and disconnects from voice.
 func (bot *Bot) handleStop(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContextBasic(s, i, true)
+	guild, err := bot.validateVoiceContextBasic(s, i, true)
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
 		return
 	}
 
-	voiceConn := s.VoiceConnections[vc.Guild.ID]
-	bot.radioMutex.Lock()
-	if session, ok := bot.radioSessions[vc.Guild.ID]; ok && session != nil {
-		session.Cancel()
-		delete(bot.radioSessions, vc.Guild.ID)
+	// Stop new streaming system
+	if err := bot.stopStream(guild.ID); err != nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream to stop.", nil, shortDelay)
+		return
 	}
-	bot.radioMutex.Unlock()
 
-	_ = voiceConn.Disconnect()
-	bot.NewResponseBuilder(s, i).Success("Stopped the radio.", shortDelay)
+	voiceConn := s.VoiceConnections[guild.ID]
+	if voiceConn != nil {
+		_ = voiceConn.Disconnect()
+	}
+
+	bot.NewResponseBuilder(s, i).Success("Stopped the stream.", shortDelay)
 }
 
 // handleSkip skips the currently playing song on the radio station.
 func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i, false)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+	// Check if there's an active stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
 		return
 	}
 
-	// for now, only allow the user who started the stream to skip
-	if vc.Session.UserID != i.Member.User.ID {
+	// Only works for radio streams
+	if session.Source.GetMetadata().Type != "radio" {
+		bot.NewResponseBuilder(s, i).Error("Skip command only works with radio streams.", nil, shortDelay)
+		return
+	}
+
+	// Only allow the user who started the stream to skip
+	if session.UserID != i.Member.User.ID {
 		bot.NewResponseBuilder(s, i).Error("Only the user who started the stream can skip.", nil, shortDelay)
 		return
 	}
 
-	err = bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	// Get station ID from session store
+	savedState := bot.sessionStore.Get(i.GuildID)
+	if savedState == nil {
+		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+		return
+	}
+
+	err := bot.azureApiClient.SkipCurrentSong(context.Background(), strconv.Itoa(savedState.StationID))
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to skip the current song.", err, shortDelay)
 		return
@@ -565,13 +464,27 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // handleNowPlaying shows the currently playing song on the radio station.
 func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i, false)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+	// Check if there's an active stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
 		return
 	}
 
-	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	// Only works for radio streams
+	if session.Source.GetMetadata().Type != "radio" {
+		bot.NewResponseBuilder(s, i).Error("Now playing only works with radio streams.", nil, shortDelay)
+		return
+	}
+
+	// Get station ID from session store
+	savedState := bot.sessionStore.Get(i.GuildID)
+	if savedState == nil {
+		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+		return
+	}
+
+	np, err := bot.azureApiClient.GetStationNowPlaying(context.Background(), strconv.Itoa(savedState.StationID))
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to get now playing information.", err, shortDelay)
 		return
@@ -582,9 +495,23 @@ func (bot *Bot) handleNowPlaying(s *discordgo.Session, i *discordgo.InteractionC
 
 // handleRequest handles song requests for the radio station.
 func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i, false)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+	// Check if there's an active stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
+		return
+	}
+
+	// Only works for radio streams
+	if session.Source.GetMetadata().Type != "radio" {
+		bot.NewResponseBuilder(s, i).Error("Song request only works with radio streams.", nil, shortDelay)
+		return
+	}
+
+	// Get station ID from session store
+	savedState := bot.sessionStore.Get(i.GuildID)
+	if savedState == nil {
+		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
 		return
 	}
 
@@ -595,7 +522,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 
-	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(savedState.StationID))
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
 		return
@@ -609,7 +536,7 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	if len(matchingSongs) == 1 {
 		for _, song := range matchingSongs {
-			bot.requestSong(s, i, song, vc.Session.Station.ID)
+			bot.requestSong(s, i, song, savedState.StationID)
 		}
 		return
 	}
@@ -624,9 +551,10 @@ func (bot *Bot) handleRequest(s *discordgo.Session, i *discordgo.InteractionCrea
 
 // handleVolume adjusts the streaming volume for the current session.
 func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	vc, err := bot.validateVoiceContext(s, i, false)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+	// Get current stream session
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
 		return
 	}
 
@@ -642,20 +570,19 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	if volumeVal == int64(vc.Session.Volume*100) {
-		bot.NewResponseBuilder(s, i).Success("Volume is already set to "+strconv.FormatInt(int64(volumeVal), 10)+"%.", shortDelay)
-		return
-	}
+	bot.streamMutex.Lock()
+	oldVolume := int(session.Volume * 100)
+	session.Volume = float64(volumeVal) / 100.0
+	bot.streamMutex.Unlock()
 
-	bot.radioMutex.Lock()
-	oldVolume := int(vc.Session.Volume * 100)
-	vc.Session.Volume = float64(volumeVal) / 100.0
-	stationID := vc.Session.Station.ID
-	bot.radioMutex.Unlock()
-
-	// Persist volume change
-	if err := bot.sessionStore.Set(i.GuildID, stationID, float64(volumeVal)/100.0); err != nil {
-		bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
+	// If it's a radio stream, persist the volume change
+	if session.Source.GetMetadata().Type == "radio" {
+		// Try to get station ID from saved state
+		if saved := bot.sessionStore.Get(i.GuildID); saved != nil {
+			if err := bot.sessionStore.Set(i.GuildID, saved.StationID, float64(volumeVal)/100.0); err != nil {
+				bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
+			}
+		}
 	}
 
 	msg := "Set volume from " + strconv.Itoa(oldVolume) + "% to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
@@ -705,15 +632,23 @@ func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.Inter
 		return
 	}
 
-	vc, err := bot.validateVoiceContext(s, i, false)
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+	// Check if there's an active stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
+		return
+	}
+
+	// Get station ID from session store
+	savedState := bot.sessionStore.Get(i.GuildID)
+	if savedState == nil {
+		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
 		return
 	}
 
 	requestID := values[0]
 
-	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(vc.Session.Station.ID))
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(savedState.StationID))
 	if err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
 		return
@@ -725,7 +660,7 @@ func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.Inter
 		return
 	}
 
-	bot.requestSong(s, i, *selectedSong, vc.Session.Station.ID)
+	bot.requestSong(s, i, *selectedSong, savedState.StationID)
 }
 
 // ===== Command Router =====
@@ -739,4 +674,112 @@ func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 	def.Handle(bot, s, i)
+}
+
+// ===== Music Commands =====
+
+// handlePlay handles the /play command to play music from URLs
+func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Validate voice context
+	guild, voiceChannelID, err := bot.validatePreJoinVoice(s, i)
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error(err.Error(), nil, shortDelay)
+		return
+	}
+
+	// Get URL from command options
+	opts := i.ApplicationCommandData().Options
+	if len(opts) == 0 {
+		bot.NewResponseBuilder(s, i).Error("No URL provided.", nil, shortDelay)
+		return
+	}
+	url := opts[0].StringValue()
+
+	// Defer response so we can take time to process
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		bot.Logger.Error("failed to defer response", "err", err)
+		return
+	}
+
+	// Create music source
+	musicSource, err := NewMusicSource(url, guild.ID, bot.Logger)
+	if err != nil {
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr("Failed to load music: " + err.Error()),
+		})
+		return
+	}
+
+	metadata := musicSource.GetMetadata()
+	bot.Logger.Debug("loaded music", "guild_id", guild.ID, "title", metadata.Title, "type", metadata.Type)
+
+	// Check if there's already an active stream
+	currentSession := bot.getStreamSession(guild.ID)
+	if currentSession != nil {
+		// Add to queue
+		queue := bot.getMusicQueue(guild.ID)
+		queue.Add(musicSource)
+
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr(fmt.Sprintf("Added to queue: **%s** by %s (Position: %d)", metadata.Title, metadata.Artist, queue.Size())),
+		})
+		return
+	}
+
+	// No active stream, start playing immediately
+	volume := DefaultVolume
+	if err := bot.startStream(guild.ID, voiceChannelID, i.Member.User.ID, musicSource, volume); err != nil {
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr("Failed to start playback: " + err.Error()),
+		})
+		return
+	}
+
+	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: strPtr(fmt.Sprintf("Now playing: **%s** by %s", metadata.Title, metadata.Artist)),
+	})
+}
+
+// handleQueue handles the /queue command to show the music queue
+func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	queue := bot.getMusicQueue(i.GuildID)
+
+	if queue.IsEmpty() {
+		bot.NewResponseBuilder(s, i).Success("The queue is empty.", shortDelay)
+		return
+	}
+
+	// Build queue message
+	msg := "**Music Queue:**\n"
+	items := queue.List()
+	for idx, source := range items {
+		metadata := source.GetMetadata()
+		msg += fmt.Sprintf("%d. **%s** by %s", idx+1, metadata.Title, metadata.Artist)
+
+		if metadata.Duration > 0 {
+			msg += fmt.Sprintf(" (%s)", formatDuration(metadata.Duration))
+		}
+		msg += "\n"
+	}
+
+	bot.NewResponseBuilder(s, i).Success(msg, longDelay)
+}
+
+// Helper function to convert string pointer
+func strPtr(s string) *string {
+	return &s
+}
+
+// Helper function to format duration
+func formatDuration(d time.Duration) string {
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%d:%02d", minutes, seconds)
 }

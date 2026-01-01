@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -29,16 +30,6 @@ type RadioStation struct {
 	IsOpus    bool   // whether the stream is in Opus format
 }
 
-// StreamSession represents an active radio streaming session in a guild
-type StreamSession struct {
-	Context context.Context    // context for managing the stream lifecycle
-	Cancel  context.CancelFunc // function to cancel the stream
-	UserID  string             // ID of the user who initiated the stream
-	Station *RadioStation      // the radio station being streamed
-	GuildID string             // ID of the guild where the stream is playing
-	Volume  float64            // volume level (0.0 to 1.0)
-}
-
 // Bot represents the Discord bot instance
 type Bot struct {
 	Token          string                    // Discord bot token
@@ -48,9 +39,11 @@ type Bot struct {
 	config         *config.Config            // bot configuration
 	azureApiClient *azurecast.Client         // Azurecast API client
 	radioStations  map[int]RadioStation      // available radio stations
-	radioMutex     sync.Mutex                // mutex for radio session access
-	radioSessions  map[string]*StreamSession // active radio sessions by guild ID
+	streamMutex    sync.Mutex                // mutex for stream session access
+	streamSessions map[string]*StreamSession // active stream sessions by guild ID
 	sessionStore   *SessionStore             // persistent session store
+	voiceStreamer  *VoiceStreamer            // voice streamer for generic audio sources
+	musicQueues    map[string]*MusicQueue    // music queues by guild ID
 }
 
 // AddCommand adds a command definition to the bot.
@@ -85,15 +78,19 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	}
 
 	bot := &Bot{
-		Token:         token,
-		Session:       sess,
-		Logger:        logger,
-		config:        cfg,
-		commands:      map[string]CommandDef{},
-		radioStations: make(map[int]RadioStation),
-		radioSessions: make(map[string]*StreamSession),
-		sessionStore:  sessionStore,
+		Token:          token,
+		Session:        sess,
+		Logger:         logger,
+		config:         cfg,
+		commands:       map[string]CommandDef{},
+		radioStations:  make(map[int]RadioStation),
+		streamSessions: make(map[string]*StreamSession),
+		sessionStore:   sessionStore,
+		musicQueues:    make(map[string]*MusicQueue),
 	}
+
+	// Initialize voice streamer
+	bot.voiceStreamer = NewVoiceStreamer(bot)
 
 	// Initialize Azurecast client
 	bot.azureApiClient, err = azurecast.NewClient(cfg.AzurecastApiUrl,
@@ -135,6 +132,15 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 	bot.AddCommand("stop", "Stops the currently streaming radio from playing", (*Bot).handleStop)
 	bot.AddCommand("skip", "Skips the currently playing song on the radio station", (*Bot).handleSkip)
 	bot.AddCommand("nowplaying", "Shows the currently playing song on the radio station", (*Bot).handleNowPlaying)
+	bot.AddCommand("play", "Play music from YouTube or other supported sources", (*Bot).handlePlay,
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "url",
+			Description: "YouTube URL or other supported source URL",
+			Required:    true,
+		},
+	)
+	bot.AddCommand("queue", "Show the current music queue", (*Bot).handleQueue)
 	bot.AddCommand("volume", "Set the volume for the current playing radio station", (*Bot).handleVolume,
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionInteger,
@@ -172,12 +178,13 @@ func (b *Bot) Start(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-stop:
 		b.Logger.Info("Shutting down Discord bot")
-		b.radioMutex.Lock()
-		for guildID, session := range b.radioSessions {
-			b.Logger.Debug("stopping radio stream", "guild_id", guildID)
+		// Stop all active stream sessions
+		b.streamMutex.Lock()
+		for guildID, session := range b.streamSessions {
+			b.Logger.Debug("stopping stream session", "guild_id", guildID)
 			session.Cancel()
 		}
-		b.radioMutex.Unlock()
+		b.streamMutex.Unlock()
 	}
 	return nil
 }
@@ -246,47 +253,15 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		b.Logger.Debug("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
 	}
 
-	// Try to restore previous session if it exists
-	b.restoreGuildSession(g.ID)
 }
 
-// restoreGuildSession attempts to restore a guild's previous streaming session
-func (b *Bot) restoreGuildSession(guildID string) {
-	savedState := b.sessionStore.Get(guildID)
-	if savedState == nil {
-		return // No saved state for this guild
-	}
-
-	station, ok := b.radioStations[savedState.StationID]
-	if !ok {
-		b.Logger.Warn("saved station no longer available", "guild_id", guildID, "station_id", savedState.StationID)
-		_ = b.sessionStore.Delete(guildID)
-		return
-	}
-
-	b.Logger.Debug("restoring previous session", "guild_id", guildID, "station", station.Name, "volume", savedState.Volume*100)
-
-	// Create a restored session (but don't auto-join voice - let user start it)
-	// Just set it up so when they use /radio again, it remembers their settings
-	ctx, cancel := context.WithCancel(context.Background())
-	b.radioMutex.Lock()
-	b.radioSessions[guildID] = &StreamSession{
-		Context: ctx,
-		Cancel:  cancel,
-		GuildID: guildID,
-		UserID:  "", // Will be set when user actually starts playback
-		Station: &station,
-		Volume:  savedState.Volume,
-	}
-	b.radioMutex.Unlock()
-}
 
 // onGuildDelete handles guild deletion events.
 func (b *Bot) onGuildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
 	b.Logger.Debug("left guild", "name", g.Name, "id", g.ID)
 }
 
-// onVoiceStateUpdate handles voice state updates to stop radio streaming when the bot leaves a voice channel.
+// onVoiceStateUpdate handles voice state updates to stop streaming when the bot leaves a voice channel.
 func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 	if vs.UserID != s.State.User.ID {
 		return
@@ -299,13 +274,93 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 			guildID := vs.GuildID
 			bot.Logger.Info("bot confirmed disconnected from voice", "guild_id", guildID)
 
-			bot.radioMutex.Lock()
-			if session, ok := bot.radioSessions[guildID]; ok && session != nil {
-				bot.Logger.Debug("cancelling active radio session", "guild_id", guildID)
+			// Stop stream session
+			bot.streamMutex.Lock()
+			if session, ok := bot.streamSessions[guildID]; ok && session != nil {
+				bot.Logger.Debug("cancelling active stream session", "guild_id", guildID)
 				session.Cancel()
-				delete(bot.radioSessions, guildID)
+				delete(bot.streamSessions, guildID)
 			}
-			bot.radioMutex.Unlock()
+			bot.streamMutex.Unlock()
 		}
 	}
+}
+
+// startStream starts streaming audio from the given source to the voice channel
+func (bot *Bot) startStream(guildID, voiceChannelID, userID string, source AudioSource, volume float64) error {
+	// Join voice channel
+	vc, err := bot.Session.ChannelVoiceJoin(guildID, voiceChannelID, false, true)
+	if err != nil {
+		return fmt.Errorf("failed to join voice channel: %w", err)
+	}
+
+	// Create stream session
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &StreamSession{
+		Context: ctx,
+		Cancel:  cancel,
+		UserID:  userID,
+		GuildID: guildID,
+		Volume:  volume,
+		Source:  source,
+	}
+
+	// Store session
+	bot.streamMutex.Lock()
+	bot.streamSessions[guildID] = session
+	bot.streamMutex.Unlock()
+
+	// Start streaming in a goroutine
+	go func() {
+		if err := bot.voiceStreamer.Stream(vc, session); err != nil {
+			bot.Logger.Error("stream error", "guild_id", guildID, "err", err)
+		}
+
+		// Clean up after streaming finishes
+		bot.streamMutex.Lock()
+		delete(bot.streamSessions, guildID)
+		bot.streamMutex.Unlock()
+
+		// Disconnect from voice
+		if err := vc.Disconnect(); err != nil {
+			bot.Logger.Warn("error disconnecting from voice", "guild_id", guildID, "err", err)
+		}
+	}()
+
+	return nil
+}
+
+// stopStream stops any active stream in the guild
+func (bot *Bot) stopStream(guildID string) error {
+	bot.streamMutex.Lock()
+	session, ok := bot.streamSessions[guildID]
+	bot.streamMutex.Unlock()
+
+	if !ok || session == nil {
+		return fmt.Errorf("no active stream in this guild")
+	}
+
+	session.Cancel()
+	return nil
+}
+
+// getStreamSession returns the current stream session for a guild
+func (bot *Bot) getStreamSession(guildID string) *StreamSession {
+	bot.streamMutex.Lock()
+	defer bot.streamMutex.Unlock()
+	return bot.streamSessions[guildID]
+}
+
+// getMusicQueue returns the music queue for a guild, creating one if needed
+func (bot *Bot) getMusicQueue(guildID string) *MusicQueue {
+	bot.streamMutex.Lock()
+	defer bot.streamMutex.Unlock()
+
+	if queue, ok := bot.musicQueues[guildID]; ok {
+		return queue
+	}
+
+	queue := NewMusicQueue()
+	bot.musicQueues[guildID] = queue
+	return queue
 }
