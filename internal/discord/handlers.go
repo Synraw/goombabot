@@ -719,10 +719,10 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	// Get URL from command options
+	// Get query from command options
 	opts := i.ApplicationCommandData().Options
 	if len(opts) == 0 {
-		bot.NewResponseBuilder(s, i).Error("No URL provided.", nil, shortDelay)
+		bot.NewResponseBuilder(s, i).Error("No query provided.", nil, shortDelay)
 		return
 	}
 	input := opts[0].StringValue()
@@ -786,6 +786,13 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // handleQueue handles the /queue command to show the music queue
 func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Check if there's an active music stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil || session.Source.GetMetadata().Type != "music" {
+		bot.NewResponseBuilder(s, i).Error("No active music stream.", nil, shortDelay)
+		return
+	}
+
 	queue := bot.getMusicQueue(i.GuildID)
 
 	if queue.IsEmpty() {
