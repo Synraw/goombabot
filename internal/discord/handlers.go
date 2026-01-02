@@ -712,6 +712,9 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
+	// Clear any stale stream/voice state so we do not queue against dead sessions.
+	bot.cleanupStaleVoiceState(s, guild.ID)
+
 	// Check if radio is currently playing - if so, deny adding music
 	session := bot.getStreamSession(guild.ID)
 	if session != nil && session.Source.GetMetadata().Type == "radio" {
@@ -754,8 +757,19 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	metadata := musicSource.GetMetadata()
 	bot.Logger.Debug("loaded music", "guild_id", guild.ID, "title", metadata.Title, "type", metadata.Type)
 
-	// Check if there's already an active stream
+	// Check if there's already an active stream (and ensure it is actually healthy)
 	currentSession := bot.getStreamSession(guild.ID)
+	vc := s.VoiceConnections[guild.ID]
+	if currentSession != nil {
+		// If the session has been cancelled or the voice connection is gone, drop the stale session.
+		if (currentSession.Context != nil && currentSession.Context.Err() != nil) || vc == nil || !vc.Ready {
+			bot.streamMutex.Lock()
+			delete(bot.streamSessions, guild.ID)
+			bot.streamMutex.Unlock()
+			currentSession = nil
+		}
+	}
+
 	if currentSession != nil {
 		// Add to queue
 		queue := bot.getMusicQueue(guild.ID)
