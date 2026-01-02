@@ -275,6 +275,15 @@ func (q *MusicQueue) Current() *MusicSource {
 	return nil
 }
 
+// SetCurrent sets the current track index
+func (q *MusicQueue) SetCurrent(index int) bool {
+	if index >= 0 && index < len(q.items) {
+		q.current = index
+		return true
+	}
+	return false
+}
+
 // Clear clears the queue
 func (q *MusicQueue) Clear() {
 	q.items = make([]*MusicSource, 0)

@@ -784,6 +784,13 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// No active stream, start playing immediately
 	volume := DefaultVolume
+
+	// Add the first song to the queue and set it as current
+	queue := bot.getMusicQueue(guild.ID)
+	queue.Add(musicSource)
+	// Set the first song as current
+	queue.SetCurrent(0)
+
 	if err := bot.startStream(guild.ID, voiceChannelID, i.Member.User.ID, musicSource, volume); err != nil {
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to start playback: " + err.Error()),
@@ -801,11 +808,6 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 // handleQueue handles the /queue command to show the music queue
 func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	queue := bot.getMusicQueue(i.GuildID)
-
-	if queue.IsEmpty() {
-		bot.NewResponseBuilder(s, i).Success("The queue is empty.", shortDelay)
-		return
-	}
 
 	session := bot.getStreamSession(i.GuildID)
 

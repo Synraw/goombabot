@@ -12,8 +12,10 @@ import (
 	"github.com/synraw/goombabot/internal/config"
 )
 
+// CommandHandler defines the function signature for command handlers.
 type CommandHandler func(b *Bot, s *discordgo.Session, i *discordgo.InteractionCreate)
 
+// CommandDef represents a command definition with its handler.
 type CommandDef struct {
 	Command *discordgo.ApplicationCommand
 	Handle  CommandHandler
