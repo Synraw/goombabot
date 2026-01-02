@@ -237,12 +237,11 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 			b.Logger.Warn("command has no definition", "name", name)
 			continue
 		}
-		cmd, err := b.Session.ApplicationCommandCreate(s.State.User.ID, g.ID, def.Command)
+		_, err := b.Session.ApplicationCommandCreate(s.State.User.ID, g.ID, def.Command)
 		if err != nil {
 			b.Logger.Error("failed to register command", "name", name, "guild_id", g.ID, "err", err)
 			continue
 		}
-		b.Logger.Debug("registered command", "name", name, "id", cmd.ID, "guild_id", g.ID)
 	}
 
 }
