@@ -829,10 +829,12 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	items := queue.List()
 	for idx, source := range items {
-		if source == nil || source.GetMetadata().Type == "radio" {
+		metadata := source.GetMetadata()
+
+		if source == nil || metadata.Type == "radio" {
 			continue
 		}
-		metadata := source.GetMetadata()
+
 		fmt.Fprintf(&msg, "%d. [**%s** by %s](<%s>)", idx+1, metadata.Title, metadata.Artist, metadata.URL)
 
 		if metadata.Duration > 0 {
