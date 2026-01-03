@@ -826,7 +826,7 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 			continue
 		}
 		metadata := source.GetMetadata()
-		fmt.Fprintf(&msg, "%d. **%s** by %s", idx+1, metadata.Title, metadata.Artist)
+		fmt.Fprintf(&msg, "%d. [**%s** by %s](%s)", idx+1, metadata.Title, metadata.Artist, metadata.URL)
 
 		if metadata.Duration > 0 {
 			fmt.Fprintf(&msg, " (%s)", formatDuration(metadata.Duration))
