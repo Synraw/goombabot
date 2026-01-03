@@ -234,6 +234,7 @@ func (b *Bot) onInteractionUpdate(s *discordgo.Session, i *discordgo.Interaction
 func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	b.Logger.Info("joined guild", "name", g.Name, "id", g.ID)
 
+	// Register commands for this guild
 	for name, def := range b.commands {
 		if def.Command == nil {
 			b.Logger.Warn("command has no definition", "name", name)
@@ -246,6 +247,19 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		}
 	}
 
+	// Clean up old bot messages in all channels
+	for _, channel := range g.Channels {
+		if channel.Type != discordgo.ChannelTypeGuildText {
+			continue
+		}
+		messages, _ := s.ChannelMessages(channel.ID, 10, "", "", "")
+		for _, message := range messages {
+			if message.Author.ID == s.State.User.ID {
+				b.Logger.Debug("deleting old bot message", "channel_id", channel.ID, "message_id", message.ID)
+				_ = s.ChannelMessageDelete(channel.ID, message.ID)
+			}
+		}
+	}
 }
 
 // onGuildDelete handles guild deletion events.
