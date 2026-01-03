@@ -814,12 +814,23 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 	// Build queue message
 	msg := "**Music Queue:**\n"
 
-	if session != nil && session.Source.GetMetadata().Type == "music" {
+	// Check if we have an active music stream
+	isMusicStream := session != nil && session.Source.GetMetadata().Type == "music"
+
+	if isMusicStream {
 		current := queue.Current()
 		if current != nil {
 			msg += fmt.Sprint("Currently playing: **", current.GetMetadata().Title, "** by ", current.GetMetadata().Artist, "\n\n")
 		} else {
 			msg += "Currently playing: Nothing (queue not started)\n\n"
+		}
+	} else if queue.Size() > 0 {
+		// Even if session isn't detected as music, show queue's current song if queue has items
+		current := queue.Current()
+		if current != nil {
+			msg += fmt.Sprint("Currently playing: **", current.GetMetadata().Title, "** by ", current.GetMetadata().Artist, "\n\n")
+		} else {
+			msg += "Currently playing: Nothing (queue is empty)\n\n"
 		}
 	} else {
 		msg += "Currently playing: Nothing (not in a music stream)\n\n"

@@ -258,10 +258,18 @@ func (q *MusicQueue) Add(source *MusicSource) {
 	q.items = append(q.items, source)
 }
 
-// Next returns the next music source in the queue
+// Next returns the next music source in the queue and removes the previous one
 func (q *MusicQueue) Next() *MusicSource {
-	if q.current+1 < len(q.items) {
-		q.current++
+	// If there's a current song, remove it before moving to the next
+	if q.current >= 0 && q.current < len(q.items) {
+		q.items = append(q.items[:q.current], q.items[q.current+1:]...)
+	} else if q.current == -1 {
+		// Starting for the first time - move to position 0
+		q.current = 0
+	}
+
+	// Return the next song if available
+	if q.current < len(q.items) {
 		return q.items[q.current]
 	}
 	return nil
