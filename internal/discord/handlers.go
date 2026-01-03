@@ -365,8 +365,10 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	// Create radio source
 	radioSource := NewRadioSource(&station, guild.ID, bot.Logger)
 
+	channelID := i.Message.ChannelID
+
 	// Start streaming
-	if err := bot.startStream(guild.ID, voiceChannelID, i.Member.User.ID, radioSource, volume); err != nil {
+	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, radioSource, volume); err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to start radio stream: "+err.Error(), nil, shortDelay)
 		return
 	}
@@ -785,13 +787,16 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	// No active stream, start playing immediately
 	volume := DefaultVolume
 
+	// channel id
+	channelID := i.Message.ChannelID
+
 	// Add the first song to the queue and set it as current
 	queue := bot.getMusicQueue(guild.ID)
 	queue.Add(musicSource)
 	// Set the first song as current
 	queue.SetCurrent(0)
 
-	if err := bot.startStream(guild.ID, voiceChannelID, i.Member.User.ID, musicSource, volume); err != nil {
+	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, musicSource, volume); err != nil {
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to start playback: " + err.Error()),
 		})

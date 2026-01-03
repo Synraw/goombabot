@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/synraw/goombabot/internal/azurecast"
@@ -277,7 +279,7 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 }
 
 // startStream starts streaming audio from the given source to the voice channel
-func (bot *Bot) startStream(guildID, voiceChannelID, userID string, source AudioSource, volume float64) error {
+func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, source AudioSource, volume float64) error {
 	// Join voice channel
 	vc, err := bot.Session.ChannelVoiceJoin(guildID, voiceChannelID, false, true)
 	if err != nil {
@@ -327,7 +329,28 @@ func (bot *Bot) startStream(guildID, voiceChannelID, userID string, source Audio
 				session.Cancel = cancel
 
 				metadata := nextSource.GetMetadata()
+
+				var strBuild strings.Builder
+
+				fmt.Fprintf(&strBuild, " Now Playing: [**%s** by %s](<%s>)", metadata.Title, metadata.Artist, metadata.URL)
+
+				if metadata.Duration > 0 {
+					fmt.Fprintf(&strBuild, " (%s)", formatDuration(metadata.Duration))
+				}
+
+				if userID != "" {
+					fmt.Fprintf(&strBuild, " - requested by <@%s>", userID)
+				}
+
+				msg, _ := bot.Session.ChannelMessageSend(channelID, strBuild.String())
+
+				go func() {
+					time.Sleep(longDelay)
+					_ = bot.Session.ChannelMessageDelete(channelID, msg.ID)
+				}()
+
 				bot.Logger.Debug("playing next song from queue", "guild_id", guildID, "title", metadata.Title, "artist", metadata.Artist)
+
 				continue
 			}
 
