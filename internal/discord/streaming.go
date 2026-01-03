@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	bitrateKbps         = 128              // 128 kbps
 	pcmSampleRate       = 48000            // Discord standard
 	pcmChannels         = 2                // stereo
 	opusFrameMillis     = 20               // 20ms frames are standard for Discord
@@ -105,8 +106,8 @@ func (vs *VoiceStreamer) Stream(vc *discordgo.VoiceConnection, session *StreamSe
 	}
 
 	// Set encoder parameters optimized for music
-	enc.SetBitrate(128000)
-	enc.SetVbr(false)
+	enc.SetBitrate(bitrateKbps * 1000) // in bps
+	enc.SetVbr(false)                  // constant bitrate
 
 	// Calculate PCM frame parameters
 	frameSamples := pcmSampleRate / (1000 / opusFrameMillis) // 960 samples per channel at 48kHz/20ms
