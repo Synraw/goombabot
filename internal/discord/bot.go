@@ -252,11 +252,26 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		if channel.Type != discordgo.ChannelTypeGuildText {
 			continue
 		}
-		messages, _ := s.ChannelMessages(channel.ID, 10, "", "", "")
+
+		messages, err := s.ChannelMessages(channel.ID, 10, "", "", "")
+		if err != nil {
+			status := 0
+			if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
+				status = restErr.Response.StatusCode
+			}
+			b.Logger.Warn("failed to load recent messages", "channel_id", channel.ID, "status", status, "err", err)
+			continue
+		}
 		for _, message := range messages {
 			if message.Author.ID == s.State.User.ID {
 				b.Logger.Debug("deleting old bot message", "channel_id", channel.ID, "message_id", message.ID)
-				_ = s.ChannelMessageDelete(channel.ID, message.ID)
+				if err := s.ChannelMessageDelete(channel.ID, message.ID); err != nil {
+					status := 0
+					if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
+						status = restErr.Response.StatusCode
+					}
+					b.Logger.Warn("failed to delete old bot message", "channel_id", channel.ID, "message_id", message.ID, "status", status, "err", err)
+				}
 			}
 		}
 	}
