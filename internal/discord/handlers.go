@@ -365,7 +365,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	// Create radio source
 	radioSource := NewRadioSource(&station, guild.ID, bot.Logger)
 
-	channelID := i.Message.ChannelID
+	channelID := i.ChannelID
 
 	// Start streaming
 	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, radioSource, volume); err != nil {
@@ -788,7 +788,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	volume := DefaultVolume
 
 	// channel id
-	channelID := i.Message.ChannelID
+	channelID := i.ChannelID
 
 	// Add the first song to the queue and set it as current
 	queue := bot.getMusicQueue(guild.ID)
@@ -839,7 +839,7 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 		if source == nil || metadata.Type == "radio" {
 			continue
 		}
-		
+
 		fmt.Fprintf(&msg, "%d. [**%s** by %s](<%s>)", idx+1, metadata.Title, metadata.Artist, metadata.URL)
 
 		if metadata.Duration > 0 {
