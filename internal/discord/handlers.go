@@ -820,13 +820,20 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 	var msg strings.Builder
 	msg.WriteString("**Music Queue:**\n")
 
+	// If the queue is empty
+	if queue.Size() == 0 {
+		msg.WriteString("_The queue is empty._")
+		bot.NewResponseBuilder(s, i).Success(msg.String(), shortDelay)
+		return
+	}
+
 	items := queue.List()
 	for idx, source := range items {
 		if source == nil || source.GetMetadata().Type == "radio" {
 			continue
 		}
 		metadata := source.GetMetadata()
-		fmt.Fprintf(&msg, "%d. [**%s** by %s](%s)", idx+1, metadata.Title, metadata.Artist, metadata.URL)
+		fmt.Fprintf(&msg, "%d. [**%s** by %s](<%s>)", idx+1, metadata.Title, metadata.Artist, metadata.URL)
 
 		if metadata.Duration > 0 {
 			fmt.Fprintf(&msg, " (%s)", formatDuration(metadata.Duration))
