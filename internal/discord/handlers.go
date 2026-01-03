@@ -822,7 +822,7 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	items := queue.List()
 	for idx, source := range items {
-		if source == nil || source.GetMetadata().Type != "music" {
+		if source == nil || source.GetMetadata().Type == "radio" {
 			continue
 		}
 		metadata := source.GetMetadata()
