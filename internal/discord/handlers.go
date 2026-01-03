@@ -745,7 +745,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	}
 
 	// Create music source
-	musicSource, err := NewMusicSource(url, guild.ID, bot.Logger)
+	musicSource, err := NewMusicSource(url, i.Member.User.ID, guild.ID, bot.Logger)
 	if err != nil {
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to load music: " + err.Error()),
@@ -809,48 +809,37 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	queue := bot.getMusicQueue(i.GuildID)
 
+	// Check if radio is currently playing - if so, deny adding music
 	session := bot.getStreamSession(i.GuildID)
+	if session != nil && session.Source.GetMetadata().Type == "radio" {
+		bot.NewResponseBuilder(s, i).Error("Cant display a queue while the radio is playing. Please use /stop to stop the radio first.", nil, shortDelay)
+		return
+	}
 
 	// Build queue message
-	msg := "**Music Queue:**\n"
-
-	// Check if we have an active music stream
-	isMusicStream := session != nil && session.Source.GetMetadata().Type == "music"
-
-	if isMusicStream {
-		current := queue.Current()
-		if current != nil {
-			msg += fmt.Sprint("Currently playing: **", current.GetMetadata().Title, "** by ", current.GetMetadata().Artist, "\n\n")
-		} else {
-			msg += "Currently playing: Nothing (queue not started)\n\n"
-		}
-	} else if queue.Size() > 0 {
-		// Even if session isn't detected as music, show queue's current song if queue has items
-		current := queue.Current()
-		if current != nil {
-			msg += fmt.Sprint("Currently playing: **", current.GetMetadata().Title, "** by ", current.GetMetadata().Artist, "\n\n")
-		} else {
-			msg += "Currently playing: Nothing (queue is empty)\n\n"
-		}
-	} else {
-		msg += "Currently playing: Nothing (not in a music stream)\n\n"
-	}
+	var msg strings.Builder
+	msg.WriteString("**Music Queue:**\n")
 
 	items := queue.List()
 	for idx, source := range items {
-		if source == nil {
+		if source == nil || source.GetMetadata().Type != "music" {
 			continue
 		}
 		metadata := source.GetMetadata()
-		msg += fmt.Sprintf("%d. **%s** by %s", idx+1, metadata.Title, metadata.Artist)
+		fmt.Fprintf(&msg, "%d. **%s** by %s", idx+1, metadata.Title, metadata.Artist)
 
 		if metadata.Duration > 0 {
-			msg += fmt.Sprintf(" (%s)", formatDuration(metadata.Duration))
+			fmt.Fprintf(&msg, " (%s)", formatDuration(metadata.Duration))
 		}
-		msg += "\n"
+
+		if source.userID != "" {
+			fmt.Fprintf(&msg, " - requested by <@%s>", source.userID)
+		}
+
+		msg.WriteString("\n")
 	}
 
-	bot.NewResponseBuilder(s, i).Success(msg, longDelay)
+	bot.NewResponseBuilder(s, i).Success(msg.String(), longDelay)
 }
 
 // Helper function to convert string pointer

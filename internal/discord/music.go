@@ -16,6 +16,7 @@ type MusicSource struct {
 	URL      string
 	Metadata AudioMetadata
 	cmd      *exec.Cmd
+	userID   string
 	guildID  string
 	logger   interface {
 		Debug(msg string, keysAndValues ...any)
@@ -35,7 +36,7 @@ type YtDlpMetadata struct {
 }
 
 // NewMusicSource creates a new music source from a URL using yt-dlp
-func NewMusicSource(url, guildID string, logger interface {
+func NewMusicSource(url, userID string, guildID string, logger interface {
 	Debug(msg string, keysAndValues ...any)
 	Warn(msg string, keysAndValues ...any)
 	Error(msg string, keysAndValues ...any)
@@ -49,6 +50,7 @@ func NewMusicSource(url, guildID string, logger interface {
 	source := &MusicSource{
 		URL:     url,
 		guildID: guildID,
+		userID:  userID,
 		logger:  logger,
 		Metadata: AudioMetadata{
 			Title:    metadata.Title,
