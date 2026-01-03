@@ -309,9 +309,9 @@ func (bot *Bot) startStream(guildID, voiceChannelID, userID string, source Audio
 				break
 			}
 
-			// Check if there's a next song in the queue (for music sources only)
+			// Check if there's a next song in the queue (for any non-radio source)
 			sourceType := session.Source.GetMetadata().Type
-			if sourceType == "music" {
+			if sourceType != "radio" {
 				queue := bot.getMusicQueue(guildID)
 				nextSource := queue.Next()
 				if nextSource == nil {
