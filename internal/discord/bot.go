@@ -252,7 +252,6 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		if channel.Type != discordgo.ChannelTypeGuildText {
 			continue
 		}
-
 		messages, err := s.ChannelMessages(channel.ID, 10, "", "", "")
 		if err != nil {
 			status := 0

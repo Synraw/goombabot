@@ -13,12 +13,13 @@ import (
 
 // MusicSource represents a music source from yt-dlp (YouTube, SoundCloud, etc.)
 type MusicSource struct {
-	URL      string
-	Metadata AudioMetadata
-	cmd      *exec.Cmd
-	userID   string
-	guildID  string
-	logger   interface {
+	URL       string
+	Metadata  AudioMetadata
+	ffmpegCmd *exec.Cmd
+	ytdlpCmd  *exec.Cmd
+	userID    string
+	guildID   string
+	logger    interface {
 		Debug(msg string, keysAndValues ...any)
 		Warn(msg string, keysAndValues ...any)
 		Error(msg string, keysAndValues ...any)
@@ -201,15 +202,23 @@ func (m *MusicSource) GetPCMReader(ctx context.Context) (io.Reader, error) {
 		return nil, fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
-	m.logger.Debug("started yt-dlp and ffmpeg pipeline", "guild_id", m.guildID, "url", m.URL)
-
 	// Store commands for cleanup
-	m.cmd = ffmpegCmd
+	m.ffmpegCmd = ffmpegCmd
+	m.ytdlpCmd = ytDlpCmd
+
+	m.logger.Debug("started yt-dlp and ffmpeg pipeline", "guild_id", m.guildID, "url", m.URL)
 
 	// Log yt-dlp stderr
 	go func() {
 		scanner := NewStreamingPCMReader(nil, ytDlpStderr, m.guildID, m.logger)
 		scanner.logStderr()
+	}()
+
+	// Wait for yt-dlp to finish in a goroutine to avoid blocking
+	go func() {
+		if err := ytDlpCmd.Wait(); err != nil {
+			m.logger.Warn("yt-dlp process error", "err", err)
+		}
 	}()
 
 	// Create streaming PCM reader that logs ffmpeg stderr
@@ -231,12 +240,28 @@ func (m *MusicSource) GetMetadata() AudioMetadata {
 
 // Cleanup cleans up the yt-dlp and ffmpeg processes
 func (m *MusicSource) Cleanup() error {
-	if m.cmd != nil && m.cmd.Process != nil {
-		m.logger.Debug("cleaning up music source", "guild_id", m.guildID)
-		if err := m.cmd.Process.Kill(); err != nil {
-			m.logger.Warn("error killing ffmpeg process", "err", err)
+	var errs []error
+
+	if m.ytdlpCmd != nil && m.ytdlpCmd.Process != nil {
+		m.logger.Debug("cleaning up yt-dlp process", "guild_id", m.guildID)
+		if err := m.ytdlpCmd.Process.Kill(); err != nil {
+			m.logger.Warn("error killing yt-dlp process", "err", err)
+			errs = append(errs, err)
 		}
-		_ = m.cmd.Wait()
+		_ = m.ytdlpCmd.Wait()
+	}
+
+	if m.ffmpegCmd != nil && m.ffmpegCmd.Process != nil {
+		m.logger.Debug("cleaning up ffmpeg process", "guild_id", m.guildID)
+		if err := m.ffmpegCmd.Process.Kill(); err != nil {
+			m.logger.Warn("error killing ffmpeg process", "err", err)
+			errs = append(errs, err)
+		}
+		_ = m.ffmpegCmd.Wait()
+	}
+
+	if len(errs) > 0 {
+		return errs[0]
 	}
 	return nil
 }
