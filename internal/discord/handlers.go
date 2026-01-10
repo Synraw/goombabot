@@ -813,7 +813,7 @@ func (bot *Bot) handleRepeat(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 	}
 
-	bot.NewResponseBuilder(s, i).Success("Repeat mode set to "+repeatOption, mediumDelay)
+	bot.NewResponseBuilder(s, i).Success("Repeat mode set to **"+repeatOption+"**", mediumDelay)
 }
 
 // ===== Component Handlers =====
