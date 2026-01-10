@@ -9,9 +9,10 @@ import (
 
 // GuildSessionState represents persisted session data for a guild
 type GuildSessionState struct {
-	GuildID   string  `json:"guild_id"`
-	StationID int     `json:"station_id"`
-	Volume    float64 `json:"volume"`
+	GuildID    string          `json:"guild_id"`
+	StationID  int             `json:"station_id"`
+	Volume     float64         `json:"volume"`
+	RepeatMode AudioRepeatType `json:"repeat_mode"`
 }
 
 // SessionStore handles loading and saving guild session states
@@ -90,12 +91,13 @@ func (ss *SessionStore) Get(guildID string) *GuildSessionState {
 }
 
 // Set saves a guild's session state and persists it
-func (ss *SessionStore) Set(guildID string, stationID int, volume float64) error {
+func (ss *SessionStore) Set(guildID string, stationID int, volume float64, repeatMode AudioRepeatType) error {
 	ss.mu.Lock()
 	ss.states[guildID] = &GuildSessionState{
-		GuildID:   guildID,
-		StationID: stationID,
-		Volume:    volume,
+		GuildID:    guildID,
+		StationID:  stationID,
+		Volume:     volume,
+		RepeatMode: repeatMode,
 	}
 	ss.mu.Unlock()
 

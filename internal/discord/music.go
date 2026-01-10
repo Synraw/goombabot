@@ -285,21 +285,24 @@ func (q *MusicQueue) Add(source *MusicSource) {
 	q.items = append(q.items, source)
 }
 
-// Next returns the next music source in the queue and removes the previous one
-func (q *MusicQueue) Next() *MusicSource {
-	// If there's a current song, remove it before moving to the next
-	if q.current >= 0 && q.current < len(q.items) {
-		q.items = append(q.items[:q.current], q.items[q.current+1:]...)
-	} else if q.current == -1 {
-		// Starting for the first time - move to position 0
-		q.current = 0
+// Next returns the next music source in the queue without removing the previous one
+func (q *MusicQueue) Next(repeatMode AudioRepeatType) *MusicSource {
+	if len(q.items) == 0 {
+		return nil
 	}
 
-	// Return the next song if available
-	if q.current < len(q.items) {
-		return q.items[q.current]
+	q.current++
+
+	if q.current >= len(q.items) {
+		if repeatMode == AudioRepeatAll {
+			q.current = 0 // This is fine for the first loop
+			return q.items[0]
+		}
+		q.current = len(q.items) - 1 // Don't exceed bounds
+		return nil
 	}
-	return nil
+
+	return q.items[q.current]
 }
 
 // Current returns the current music source

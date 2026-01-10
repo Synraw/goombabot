@@ -374,7 +374,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	// Save session state
-	if err := bot.sessionStore.Set(guild.ID, station.ID, volume); err != nil {
+	if err := bot.sessionStore.Set(guild.ID, station.ID, volume, AudioRepeatNone); err != nil {
 		bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
 	}
 
@@ -472,7 +472,7 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// Handle music stream skip (youtube, soundcloud, etc.)
 	queue := bot.getMusicQueue(i.GuildID)
-	nextSource := queue.Next()
+	nextSource := queue.Next(session.RepeatMode)
 	if nextSource == nil {
 		bot.NewResponseBuilder(s, i).Error("No more songs in the queue.", nil, shortDelay)
 		// Cancel the current stream to stop playback
@@ -606,7 +606,7 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	if session.Source.GetMetadata().Type == "radio" {
 		// Try to get station ID from saved state
 		if saved := bot.sessionStore.Get(i.GuildID); saved != nil {
-			if err := bot.sessionStore.Set(i.GuildID, saved.StationID, float64(volumeVal)/100.0); err != nil {
+			if err := bot.sessionStore.Set(i.GuildID, saved.StationID, float64(volumeVal)/100.0, saved.RepeatMode); err != nil {
 				bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
 			}
 		}
@@ -615,95 +615,6 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	msg := "Set volume from " + strconv.Itoa(oldVolume) + "% to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
 	bot.NewResponseBuilder(s, i).Success(msg, shortDelay)
 }
-
-// ===== Component Handlers =====
-
-// handleComponent routes interaction component events to the appropriate handler.
-func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	switch i.MessageComponentData().CustomID {
-	case "radio_station_select":
-		bot.handleRadioSelect(s, i)
-	case "song_request_select":
-		bot.handleSongRequestSelect(s, i)
-	}
-}
-
-// handleRadioSelect processes the station selection and starts streaming.
-func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	values := i.MessageComponentData().Values
-	if len(values) == 0 {
-		bot.NewResponseBuilder(s, i).Error("No station selected.", nil, shortDelay)
-		return
-	}
-
-	stationID, err := strconv.Atoi(values[0])
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Invalid station ID.", err, shortDelay)
-		return
-	}
-
-	station, ok := bot.radioStations[stationID]
-	if !ok {
-		bot.NewResponseBuilder(s, i).Error("Station not found.", nil, shortDelay)
-		return
-	}
-
-	bot.runRadioStream(s, i, station)
-}
-
-// handleSongRequestSelect processes the song selection and requests it.
-func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	values := i.MessageComponentData().Values
-	if len(values) == 0 {
-		bot.NewResponseBuilder(s, i).Success("No song selected.", shortDelay)
-		return
-	}
-
-	// Check if there's an active stream
-	session := bot.getStreamSession(i.GuildID)
-	if session == nil {
-		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
-		return
-	}
-
-	// Get station ID from session store
-	savedState := bot.sessionStore.Get(i.GuildID)
-	if savedState == nil {
-		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
-		return
-	}
-
-	requestID := values[0]
-
-	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(savedState.StationID))
-	if err != nil {
-		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
-		return
-	}
-
-	selectedSong := findSongByID(requestableSongs, requestID)
-	if selectedSong == nil {
-		bot.NewResponseBuilder(s, i).Error("Selected song not found.", nil, shortDelay)
-		return
-	}
-
-	bot.requestSong(s, i, *selectedSong, savedState.StationID)
-}
-
-// ===== Command Router =====
-
-// handleCommands routes interaction command events to the appropriate handler.
-func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.ApplicationCommandData()
-	def, ok := bot.commands[data.Name]
-	if !ok || def.Handle == nil {
-		bot.Logger.Warn("no handler for command", "name", data.Name)
-		return
-	}
-	def.Handle(bot, s, i)
-}
-
-// ===== Music Commands =====
 
 // handlePlay handles the /play command to play music from URLs
 func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -855,6 +766,141 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	bot.NewResponseBuilder(s, i).Success(msg.String(), longDelay)
 }
+
+func (bot *Bot) handleRepeat(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Check if radio is currently playing - if so, deny repeating
+	session := bot.getStreamSession(i.GuildID)
+	if session != nil && session.Source.GetMetadata().Type == "radio" {
+		bot.NewResponseBuilder(s, i).Error("Can't set repeat mode for radio streams.", nil, shortDelay)
+		return
+	}
+
+	opts := i.ApplicationCommandData().Options
+	if len(opts) == 0 {
+		bot.NewResponseBuilder(s, i).Success("Current repeat mode is set to "+session.RepeatMode.String(), mediumDelay)
+		return
+	}
+
+	repeatOption, err := getStringOption(opts, 0)
+
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Failed to get repeat option.", err, shortDelay)
+		return
+	}
+
+	var repeatType AudioRepeatType
+	switch repeatOption {
+	case "none":
+		repeatType = AudioRepeatNone
+	case "one":
+		repeatType = AudioRepeatOne
+	case "all":
+		repeatType = AudioRepeatAll
+	default:
+		bot.NewResponseBuilder(s, i).Error("Invalid repeat option.", nil, shortDelay)
+		return
+	}
+
+	session.RepeatMode = repeatType
+
+	// Persist the repeat mode change
+	if saved := bot.sessionStore.Get(i.GuildID); saved != nil {
+		if err := bot.sessionStore.Set(i.GuildID, saved.StationID, saved.Volume, repeatType); err != nil {
+			bot.Logger.Warn("failed to persist repeat mode change", "guild_id", i.GuildID, "err", err)
+		}
+	}
+
+	bot.NewResponseBuilder(s, i).Success("Repeat mode set to "+repeatOption, mediumDelay)
+}
+
+// ===== Component Handlers =====
+
+// handleComponent routes interaction component events to the appropriate handler.
+func (bot *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.MessageComponentData().CustomID {
+	case "radio_station_select":
+		bot.handleRadioSelect(s, i)
+	case "song_request_select":
+		bot.handleSongRequestSelect(s, i)
+	}
+}
+
+// handleRadioSelect processes the station selection and starts streaming.
+func (bot *Bot) handleRadioSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	values := i.MessageComponentData().Values
+	if len(values) == 0 {
+		bot.NewResponseBuilder(s, i).Error("No station selected.", nil, shortDelay)
+		return
+	}
+
+	stationID, err := strconv.Atoi(values[0])
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Invalid station ID.", err, shortDelay)
+		return
+	}
+
+	station, ok := bot.radioStations[stationID]
+	if !ok {
+		bot.NewResponseBuilder(s, i).Error("Station not found.", nil, shortDelay)
+		return
+	}
+
+	bot.runRadioStream(s, i, station)
+}
+
+// handleSongRequestSelect processes the song selection and requests it.
+func (bot *Bot) handleSongRequestSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	values := i.MessageComponentData().Values
+	if len(values) == 0 {
+		bot.NewResponseBuilder(s, i).Success("No song selected.", shortDelay)
+		return
+	}
+
+	// Check if there's an active stream
+	session := bot.getStreamSession(i.GuildID)
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
+		return
+	}
+
+	// Get station ID from session store
+	savedState := bot.sessionStore.Get(i.GuildID)
+	if savedState == nil {
+		bot.NewResponseBuilder(s, i).Error("Could not find station information.", nil, shortDelay)
+		return
+	}
+
+	requestID := values[0]
+
+	requestableSongs, err := bot.azureApiClient.GetStationRequestableSongs(context.Background(), strconv.Itoa(savedState.StationID))
+	if err != nil {
+		bot.NewResponseBuilder(s, i).Error("Failed to get requestable songs.", err, shortDelay)
+		return
+	}
+
+	selectedSong := findSongByID(requestableSongs, requestID)
+	if selectedSong == nil {
+		bot.NewResponseBuilder(s, i).Error("Selected song not found.", nil, shortDelay)
+		return
+	}
+
+	bot.requestSong(s, i, *selectedSong, savedState.StationID)
+}
+
+// ===== Command Router =====
+
+// handleCommands routes interaction command events to the appropriate handler.
+func (bot *Bot) handleCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	def, ok := bot.commands[data.Name]
+	if !ok || def.Handle == nil {
+		bot.Logger.Warn("no handler for command", "name", data.Name)
+		return
+	}
+	def.Handle(bot, s, i)
+}
+
+// ===== Utility Functions =====
 
 // Helper function to convert string pointer
 func strPtr(s string) *string {

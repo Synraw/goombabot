@@ -28,6 +28,18 @@ const (
 	readyCheckThreshold = 3 * time.Second  // threshold for waiting for voice connection to be ready
 )
 
+type AudioRepeatType int
+
+const (
+	AudioRepeatNone AudioRepeatType = iota
+	AudioRepeatOne
+	AudioRepeatAll
+)
+
+func (art AudioRepeatType) String() string {
+	return [...]string{"none", "one", "all"}[art]
+}
+
 // AudioSource represents any source of audio that can be streamed to Discord.
 // Implementations include radio streams, yt-dlp music sources, local files, etc.
 type AudioSource interface {
@@ -54,12 +66,13 @@ type AudioMetadata struct {
 
 // StreamSession represents an active audio streaming session in a guild.
 type StreamSession struct {
-	Context context.Context    // context for managing the stream lifecycle
-	Cancel  context.CancelFunc // function to cancel the stream
-	UserID  string             // ID of the user who initiated the stream
-	GuildID string             // ID of the guild where the stream is playing
-	Volume  float64            // volume level (0.0 to 1.0)
-	Source  AudioSource        // the audio source being streamed
+	Context    context.Context    // context for managing the stream lifecycle
+	Cancel     context.CancelFunc // function to cancel the stream
+	UserID     string             // ID of the user who initiated the stream
+	GuildID    string             // ID of the guild where the stream is playing
+	Volume     float64            // volume level (0.0 to 1.0)
+	RepeatMode AudioRepeatType    // repeat mode for the stream (only valid for music streams, not radios)
+	Source     AudioSource        // the audio source being streamed
 }
 
 // VoiceStreamer handles streaming audio from any AudioSource to Discord voice.

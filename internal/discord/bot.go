@@ -150,6 +150,27 @@ func New(token string, logger *slog.Logger, cfg *config.Config) (*Bot, error) {
 			Required:    true,
 		},
 	)
+	bot.AddCommand("repeat", "Set or get the current music queue repeating mode (only valid for music streams, not radios)", (*Bot).handleRepeat,
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "mode",
+			Description: "Repeat mode: none, one, all",
+			Required:    false,
+			Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{
+					Name:  "none",
+					Value: "none",
+				},
+				{
+					Name:  "one",
+					Value: "one",
+				},
+				{
+					Name:  "all",
+					Value: "all",
+				},
+			},
+		})
 	bot.AddCommand("request", "Request a song to be played on the radio station (can show up-to 25 results to choose from)", (*Bot).handleRequest,
 		&discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionString,
@@ -311,12 +332,13 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 	// Create stream session
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &StreamSession{
-		Context: ctx,
-		Cancel:  cancel,
-		UserID:  userID,
-		GuildID: guildID,
-		Volume:  volume,
-		Source:  source,
+		Context:    ctx,
+		Cancel:     cancel,
+		UserID:     userID,
+		GuildID:    guildID,
+		Volume:     volume,
+		RepeatMode: AudioRepeatNone,
+		Source:     source,
 	}
 
 	// Store session
@@ -336,8 +358,14 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 			// Check if there's a next song in the queue (for any non-radio source)
 			sourceType := session.Source.GetMetadata().Type
 			if sourceType != "radio" {
+				if session.RepeatMode == AudioRepeatOne {
+					ctx, cancel := context.WithCancel(context.Background())
+					session.Context = ctx
+					session.Cancel = cancel
+					continue
+				}
 				queue := bot.getMusicQueue(guildID)
-				nextSource := queue.Next()
+				nextSource := queue.Next(session.RepeatMode)
 				if nextSource == nil {
 					// Queue is empty, end streaming
 					bot.Logger.Debug("queue finished, ending stream", "guild_id", guildID)
