@@ -369,6 +369,7 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 			sourceType := session.Source.GetMetadata().Type
 			if sourceType != "radio" {
 				if session.RepeatMode == AudioRepeatOne {
+					// Repeat the same source
 					ctx, cancel := context.WithCancel(context.Background())
 					session.Context = ctx
 					session.Cancel = cancel
