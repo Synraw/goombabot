@@ -335,7 +335,7 @@ func (bot *Bot) onVoiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStat
 }
 
 // startStream starts streaming audio from the given source to the voice channel
-func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, source AudioSource, volume float64) error {
+func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, source AudioSource, volume float64, repeatMode AudioRepeatType) error {
 	// Join voice channel
 	vc, err := bot.Session.ChannelVoiceJoin(guildID, voiceChannelID, false, true)
 	if err != nil {
@@ -350,7 +350,7 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 		UserID:     userID,
 		GuildID:    guildID,
 		Volume:     volume,
-		RepeatMode: AudioRepeatNone,
+		RepeatMode: repeatMode,
 		Source:     source,
 	}
 

@@ -368,7 +368,7 @@ func (bot *Bot) runRadioStream(s *discordgo.Session, i *discordgo.InteractionCre
 	channelID := i.ChannelID
 
 	// Start streaming
-	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, radioSource, volume); err != nil {
+	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, radioSource, volume, AudioRepeatNone); err != nil {
 		bot.NewResponseBuilder(s, i).Error("Failed to start radio stream: "+err.Error(), nil, shortDelay)
 		return
 	}
@@ -610,14 +610,23 @@ func (bot *Bot) handleVolume(s *discordgo.Session, i *discordgo.InteractionCreat
 	session.Volume = float64(volumeVal) / 100.0
 	bot.streamMutex.Unlock()
 
-	// If it's a radio stream, persist the volume change
-	if session.Source.GetMetadata().Type == "radio" {
-		// Try to get station ID from saved state
-		if saved := bot.sessionStore.Get(i.GuildID); saved != nil {
-			if err := bot.sessionStore.Set(i.GuildID, saved.StationID, float64(volumeVal)/100.0, saved.RepeatMode); err != nil {
-				bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
-			}
+	// Persist the volume change for both radio and music streams
+	saved := bot.sessionStore.Get(i.GuildID)
+	if saved == nil {
+		// Create a new saved state if one doesn't exist (for music streams)
+		saved = &GuildSessionState{
+			GuildID:    i.GuildID,
+			StationID:  0, // 0 indicates music stream, not radio
+			Volume:     float64(volumeVal) / 100.0,
+			RepeatMode: session.RepeatMode,
 		}
+	} else {
+		// Update existing saved state
+		saved.Volume = float64(volumeVal) / 100.0
+	}
+
+	if err := bot.sessionStore.Set(i.GuildID, saved.StationID, saved.Volume, saved.RepeatMode); err != nil {
+		bot.Logger.Warn("failed to persist volume change", "guild_id", i.GuildID, "err", err)
 	}
 
 	msg := "Set volume from " + strconv.Itoa(oldVolume) + "% to " + strconv.FormatInt(int64(volumeVal), 10) + "%"
@@ -703,10 +712,24 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	// No active stream, start playing immediately
-	volume := DefaultVolume
+	// No active session, start new stream
+	saved := bot.sessionStore.Get(guild.ID)
+	if saved == nil {
+		// No saved state, use default volume
+		saved = &GuildSessionState{
+			GuildID:    guild.ID,
+			StationID:  0, // 0 indicates music stream, not radio
+			Volume:     DefaultVolume,
+			RepeatMode: AudioRepeatNone,
+		}
+		if err := bot.sessionStore.Set(guild.ID, saved.StationID, saved.Volume, saved.RepeatMode); err != nil {
+			bot.Logger.Warn("failed to persist session state", "guild_id", guild.ID, "err", err)
+		}
+	}
 
-	// channel id
+	// Use saved volume
+	volume := clampVolume(saved.Volume)
+
 	channelID := i.ChannelID
 
 	// Add the first song to the queue and set it as current
@@ -715,7 +738,7 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 	// Set the first song as current
 	queue.SetCurrent(0)
 
-	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, musicSource, volume); err != nil {
+	if err := bot.startStream(guild.ID, channelID, voiceChannelID, i.Member.User.ID, musicSource, volume, saved.RepeatMode); err != nil {
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("Failed to start playback: " + err.Error()),
 		})
@@ -815,10 +838,22 @@ func (bot *Bot) handleRepeat(s *discordgo.Session, i *discordgo.InteractionCreat
 	session.RepeatMode = repeatType
 
 	// Persist the repeat mode change
-	if saved := bot.sessionStore.Get(i.GuildID); saved != nil {
-		if err := bot.sessionStore.Set(i.GuildID, saved.StationID, saved.Volume, repeatType); err != nil {
-			bot.Logger.Warn("failed to persist repeat mode change", "guild_id", i.GuildID, "err", err)
+	saved := bot.sessionStore.Get(i.GuildID)
+	if saved == nil {
+		// Create a new saved state if one doesn't exist
+		saved = &GuildSessionState{
+			GuildID:    i.GuildID,
+			StationID:  0, // 0 indicates music stream, not radio
+			Volume:     session.Volume,
+			RepeatMode: repeatType,
 		}
+	} else {
+		// Update existing saved state
+		saved.RepeatMode = repeatType
+	}
+
+	if err := bot.sessionStore.Set(i.GuildID, saved.StationID, saved.Volume, saved.RepeatMode); err != nil {
+		bot.Logger.Warn("failed to persist repeat mode change", "guild_id", i.GuildID, "err", err)
 	}
 
 	bot.NewResponseBuilder(s, i).Success("Repeat mode set to **"+repeatOption+"**", mediumDelay)
