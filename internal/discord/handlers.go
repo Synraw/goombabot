@@ -724,7 +724,6 @@ func (bot *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate)
 // handleQueue handles the /queue command to show the music queue
 func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	queue := bot.getMusicQueue(i.GuildID)
-
 	// Check if radio is currently playing - if so, deny adding music
 	session := bot.getStreamSession(i.GuildID)
 	if session != nil && session.Source.GetMetadata().Type == "radio" {
