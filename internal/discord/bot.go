@@ -277,23 +277,26 @@ func (b *Bot) onGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		if channel.Type != discordgo.ChannelTypeGuildText {
 			continue
 		}
+
+		// Check timeout before fetching messages
+		select {
+		case <-ctx.Done():
+			b.Logger.Warn("cleanup operation timed out, stopping further processing", "max_duration", maxDuration)
+			return
+		default:
+		}
+
 		messages, err := s.ChannelMessages(channel.ID, 10, "", "", "")
 		if err == nil {
 			for _, message := range messages {
 				if message.Author.ID == s.State.User.ID {
-					select {
-					case <-ctx.Done():
-						b.Logger.Warn("cleanup operation timed out, canceling remaining deletions")
-						return
-					default:
-						b.Logger.Debug("deleting old bot message", "channel_id", channel.ID, "message_id", message.ID)
-						if err := s.ChannelMessageDelete(channel.ID, message.ID); err != nil {
-							status := 0
-							if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
-								status = restErr.Response.StatusCode
-							}
-							b.Logger.Warn("failed to delete old bot message", "channel_id", channel.ID, "message_id", message.ID, "status", status, "err", err)
+					b.Logger.Debug("deleting old bot message", "channel_id", channel.ID, "message_id", message.ID)
+					if err := s.ChannelMessageDelete(channel.ID, message.ID); err != nil {
+						status := 0
+						if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
+							status = restErr.Response.StatusCode
 						}
+						b.Logger.Warn("failed to delete old bot message", "channel_id", channel.ID, "message_id", message.ID, "status", status, "err", err)
 					}
 				}
 			}
