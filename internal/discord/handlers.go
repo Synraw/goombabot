@@ -770,7 +770,11 @@ func (bot *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate
 func (bot *Bot) handleRepeat(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Check if radio is currently playing - if so, deny repeating
 	session := bot.getStreamSession(i.GuildID)
-	if session != nil && session.Source.GetMetadata().Type == "radio" {
+	if session == nil {
+		bot.NewResponseBuilder(s, i).Error("No active stream.", nil, shortDelay)
+		return
+	}
+	if session.Source.GetMetadata().Type == "radio" {
 		bot.NewResponseBuilder(s, i).Error("Can't set repeat mode for radio streams.", nil, shortDelay)
 		return
 	}
