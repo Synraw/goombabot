@@ -142,9 +142,7 @@ func (vs *VoiceStreamer) Stream(vc *discordgo.VoiceConnection, session *StreamSe
 	lastReadyCheckTime := time.Now()
 
 	// Producer goroutine: reads PCM data, encodes to Opus, and sends to frames channel
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer close(frames)
 		defer doneOnce.Do(func() { close(producerDone) })
 
@@ -194,7 +192,7 @@ func (vs *VoiceStreamer) Stream(vc *discordgo.VoiceConnection, session *StreamSe
 			case frames <- opus:
 			}
 		}
-	}()
+	})
 
 	// Start voice connection health monitor
 	go vs.monitorVoiceHealth(vc, session)
