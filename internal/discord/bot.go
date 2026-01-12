@@ -379,6 +379,30 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 					break
 				}
 
+				// Validate voice connection is still ready before next stream
+				if vc == nil || !vc.Ready {
+					bot.Logger.Warn("voice connection lost between songs, attempting reconnect", "guild_id", guildID, "vc_nil", vc == nil, "vc_ready", vc != nil && vc.Ready)
+
+					// Try to reconnect
+					var reconnectErr error
+					vc, reconnectErr = bot.Session.ChannelVoiceJoin(guildID, voiceChannelID, false, true)
+					if reconnectErr != nil {
+						bot.Logger.Error("failed to reconnect to voice channel", "guild_id", guildID, "err", reconnectErr)
+						break
+					}
+
+					// Give the connection a moment to stabilize
+					time.Sleep(500 * time.Millisecond)
+
+					// Verify the connection is ready
+					if !vc.Ready {
+						bot.Logger.Error("voice connection not ready after reconnect", "guild_id", guildID)
+						break
+					}
+
+					bot.Logger.Info("successfully reconnected to voice channel", "guild_id", guildID)
+				}
+
 				// Update session to next source and create new context
 				session.Source = nextSource
 				ctx, cancel := context.WithCancel(context.Background())
@@ -421,8 +445,10 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 		bot.streamMutex.Unlock()
 
 		// Disconnect from voice
-		if err := vc.Disconnect(); err != nil {
-			bot.Logger.Warn("error disconnecting from voice", "guild_id", guildID, "err", err)
+		if vc != nil {
+			if err := vc.Disconnect(); err != nil {
+				bot.Logger.Warn("error disconnecting from voice", "guild_id", guildID, "err", err)
+			}
 		}
 	}()
 
