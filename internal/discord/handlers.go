@@ -473,7 +473,7 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 	// Handle music stream skip (youtube, soundcloud, etc.)
 	queue := bot.getMusicQueue(i.GuildID)
 
-	nextSource := queue.Next(session.RepeatMode)
+	nextSource := queue.Next(AudioRepeatNone) // Get the next source without repeating
 	if nextSource == nil {
 		bot.NewResponseBuilder(s, i).Error("No more songs in the queue.", nil, shortDelay)
 		session.Cancel()
