@@ -291,11 +291,16 @@ func (q *MusicQueue) Next(repeatMode AudioRepeatType) *MusicSource {
 		return nil
 	}
 
+	// If repeating one song and we have a current track, return it again
+	if repeatMode == AudioRepeatOne && q.current >= 0 && q.current < len(q.items) {
+		return q.items[q.current]
+	}
+
 	q.current++
 
 	if q.current >= len(q.items) {
 		if repeatMode == AudioRepeatAll {
-			q.current = 0 // This is fine for the first loop
+			q.current = 0
 			return q.items[0]
 		}
 		q.current = len(q.items) - 1 // Don't exceed bounds
