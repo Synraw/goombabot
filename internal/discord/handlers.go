@@ -826,7 +826,9 @@ func (bot *Bot) handleRepeat(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
+	bot.streamMutex.Lock()
 	session.RepeatMode = repeatType
+	bot.streamMutex.Unlock()
 
 	// Persist the repeat mode change
 	saved := bot.sessionStore.Get(i.GuildID)
