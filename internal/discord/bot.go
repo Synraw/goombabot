@@ -371,13 +371,6 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 			// Check if there's a next song in the queue (for any non-radio source)
 			sourceType := session.Source.GetMetadata().Type
 			if sourceType != "radio" {
-				if session.RepeatMode == AudioRepeatOne {
-					// Repeat the same source
-					ctx, cancel := context.WithCancel(context.Background())
-					session.Context = ctx
-					session.Cancel = cancel
-					continue
-				}
 				queue := bot.getMusicQueue(guildID)
 				nextSource := queue.Next(session.RepeatMode)
 				if nextSource == nil {
@@ -396,7 +389,7 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 
 				var strBuild strings.Builder
 
-				fmt.Fprintf(&strBuild, " Now Playing: [**%s** by %s](<%s>)", metadata.Title, metadata.Artist, metadata.URL)
+				fmt.Fprintf(&strBuild, "Now Playing: [**%s** by %s](<%s>)", metadata.Title, metadata.Artist, metadata.URL)
 
 				if metadata.Duration > 0 {
 					fmt.Fprintf(&strBuild, " (%s)", formatDuration(metadata.Duration))
@@ -444,6 +437,13 @@ func (bot *Bot) stopStream(guildID string) error {
 
 	if !ok || session == nil {
 		return fmt.Errorf("no active stream in this guild")
+	}
+
+	// Clear the music queue if applicable
+	sourceType := session.Source.GetMetadata().Type
+	if sourceType != "radio" {
+		queue := bot.getMusicQueue(guildID)
+		queue.Clear()
 	}
 
 	session.Cancel()
