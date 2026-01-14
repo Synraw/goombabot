@@ -42,8 +42,11 @@ func NewMusicSource(url, userID string, guildID string, logger interface {
 	Warn(msg string, keysAndValues ...any)
 	Error(msg string, keysAndValues ...any)
 }) (*MusicSource, error) {
-	// First, extract metadata using yt-dlp
-	metadata, err := extractMetadata(url, logger)
+	// First, extract metadata using yt-dlp with a timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	metadata, err := extractMetadata(ctx, url, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract metadata: %w", err)
 	}
@@ -66,7 +69,7 @@ func NewMusicSource(url, userID string, guildID string, logger interface {
 }
 
 // extractMetadata uses yt-dlp to extract metadata from a URL
-func extractMetadata(url string, logger interface {
+func extractMetadata(ctx context.Context, url string, logger interface {
 	Debug(msg string, keysAndValues ...any)
 	Warn(msg string, keysAndValues ...any)
 	Error(msg string, keysAndValues ...any)
@@ -80,10 +83,14 @@ func extractMetadata(url string, logger interface {
 		"--dump-json",
 		"--no-playlist",
 		"--skip-download",
+		"--flat-playlist",          // Don't extract detailed info for playlists
+		"--no-warnings",            // Reduce output processing
+		"--extractor-retries", "1", // Don't retry extractors multiple times
+		"--socket-timeout", "10", // Fail faster on network issues
 		url,
 	}
 
-	cmd := exec.Command(ytDlpBin, args...)
+	cmd := exec.CommandContext(ctx, ytDlpBin, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed to extract metadata: %w", err)

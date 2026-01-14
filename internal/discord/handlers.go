@@ -475,8 +475,12 @@ func (bot *Bot) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	nextSource := queue.Next(AudioRepeatNone) // Get the next source without repeating
 	if nextSource == nil {
-		bot.NewResponseBuilder(s, i).Error("No more songs in the queue.", nil, shortDelay)
-		session.Cancel()
+		// No more songs, properly stop the stream and clean up
+		if err := bot.stopStream(i.GuildID); err != nil {
+			bot.NewResponseBuilder(s, i).Error("Failed to stop stream.", err, shortDelay)
+			return
+		}
+		bot.NewResponseBuilder(s, i).Success("Queue finished. Stopped playback.", shortDelay)
 		return
 	}
 
