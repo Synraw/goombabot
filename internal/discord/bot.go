@@ -419,10 +419,6 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 					fmt.Fprintf(&strBuild, " (%s)", formatDuration(metadata.Duration))
 				}
 
-				if userID != "" {
-					fmt.Fprintf(&strBuild, " - requested by <@%s>", userID)
-				}
-
 				msg, _ := bot.Session.ChannelMessageSend(channelID, strBuild.String())
 
 				go func() {
@@ -441,14 +437,18 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 
 		// Clean up after streaming finishes
 		bot.streamMutex.Lock()
-		delete(bot.streamSessions, guildID)
+		_, stillExists := bot.streamSessions[guildID]
+		if stillExists {
+			delete(bot.streamSessions, guildID)
+		}
 		bot.streamMutex.Unlock()
 
-		// Disconnect from voice
-		if vc != nil {
+		// Disconnect from voice (only if session still existed, meaning stopStream wasn't called)
+		if stillExists && vc != nil {
 			if err := vc.Disconnect(); err != nil {
 				bot.Logger.Warn("error disconnecting from voice", "guild_id", guildID, "err", err)
 			}
+			time.Sleep(voiceDisconnectWait)
 		}
 	}()
 
@@ -459,6 +459,10 @@ func (bot *Bot) startStream(guildID, channelID, voiceChannelID, userID string, s
 func (bot *Bot) stopStream(guildID string) error {
 	bot.streamMutex.Lock()
 	session, ok := bot.streamSessions[guildID]
+	if ok && session != nil {
+		// Remove session from map immediately
+		delete(bot.streamSessions, guildID)
+	}
 	bot.streamMutex.Unlock()
 
 	if !ok || session == nil {
@@ -472,7 +476,19 @@ func (bot *Bot) stopStream(guildID string) error {
 		queue.Clear()
 	}
 
+	// Cancel the context to stop streaming
 	session.Cancel()
+
+	// Disconnect from voice channel immediately
+	vc := bot.Session.VoiceConnections[guildID]
+	if vc != nil {
+		if err := vc.Disconnect(); err != nil {
+			bot.Logger.Warn("error disconnecting from voice during stopStream", "guild_id", guildID, "err", err)
+		}
+		// Wait a bit for disconnect to complete
+		time.Sleep(voiceDisconnectWait)
+	}
+
 	return nil
 }
 
