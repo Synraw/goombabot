@@ -161,7 +161,7 @@ func (vs *VoiceStreamer) Stream(vc *discordgo.VoiceConnection, session *StreamSe
 			// Read one frame of PCM data
 			if _, err := io.ReadFull(pcmReader, pcmBuf); err != nil {
 				if err != io.EOF {
-					vs.logger.Debug("pcm read error", "guild_id", session.GuildID, "err", err, "frames_read", framesRead)
+					vs.logger.Warn("pcm read error", "guild_id", session.GuildID, "err", err, "frames_read", framesRead)
 				} else {
 					vs.logger.Debug("pcm stream ended", "guild_id", session.GuildID, "frames_read", framesRead)
 				}
